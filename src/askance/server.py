@@ -1,9 +1,4 @@
-"""The MCP server: five read-only tools over the statistical core.
-
-This module only translates MCP calls into `askance.hypothesis` calls. It holds no
-statistical logic and no second copy of the test catalog, so the tools cannot advertise a
-test that does not exist.
-"""
+"""MCP tools that delegate to `askance.hypothesis`."""
 
 from __future__ import annotations
 
@@ -15,7 +10,6 @@ from pydantic import Field
 
 from askance import hypothesis as H
 
-# Every tool computes a result from its arguments and touches nothing else.
 READ_ONLY = ToolAnnotations(
     read_only_hint=True,
     destructive_hint=False,
@@ -23,7 +17,7 @@ READ_ONLY = ToolAnnotations(
     open_world_hint=False,
 )
 
-# Derived from the catalog so a test cannot appear in a schema without being callable.
+# Deriving these types from the catalogs keeps the MCP schemas in sync with dispatch.
 SampleTest = Literal[tuple(t for t, s in H.TESTS.items() if s["tool"] == "test_samples")]  # type: ignore[valid-type]
 ContingencyTest = Literal[tuple(t for t, s in H.TESTS.items() if s["tool"] == "test_contingency")]  # type: ignore[valid-type]
 Method = Literal[tuple(H.CORRECTION_METHODS)]  # type: ignore[valid-type]
@@ -37,11 +31,11 @@ mcp = MCPServer(
     title="Askance",
     version=H.version("askance"),
     instructions=(
-        "Hypothesis testing backed by SciPy and statsmodels. Call `list_tests` first to "
-        "choose a test and see what it assumes: Askance never picks a test for you. Pass "
-        "raw observations, not summaries, and clean missing values beforehand. A result of "
-        "`fail_to_reject` means the data were not decisive, never that the null hypothesis "
-        "is true. Use `adjust_p_values` whenever you run a family of related tests."
+        "Hypothesis testing and power analysis backed by SciPy and statsmodels. Call "
+        "`list_tests` before choosing a test or power design. Pass raw observations, not "
+        "summaries, and handle missing values before calling. `fail_to_reject` means the "
+        "data were not decisive; it does not establish the null hypothesis. Use "
+        "`adjust_p_values` for a family of related tests."
     ),
 )
 
@@ -55,7 +49,6 @@ mcp = MCPServer(
     ),
 )
 def list_tests() -> dict[str, Any]:
-    """The catalog of supported tests and corrections."""
     return H.list_tests()
 
 
@@ -84,7 +77,6 @@ def test_samples(
     ] = False,
     alpha: Alpha = 0.05,
 ) -> dict[str, Any]:
-    """Run a sample-based hypothesis test."""
     return H.run_samples_test(test, samples, reference, alternative, equal_var, alpha)
 
 
@@ -108,7 +100,6 @@ def test_contingency(
     ] = True,
     alpha: Alpha = 0.05,
 ) -> dict[str, Any]:
-    """Run a test of association on a contingency table."""
     return H.run_contingency_test(test, table, alternative, correction, alpha)
 
 
@@ -128,7 +119,6 @@ def test_binomial(
     alternative: Alternative = "two-sided",
     alpha: Alpha = 0.05,
 ) -> dict[str, Any]:
-    """Run an exact binomial test."""
     return H.run_binomial_test(successes, trials, probability, alternative, alpha)
 
 
@@ -136,9 +126,10 @@ def test_binomial(
     annotations=READ_ONLY,
     description=(
         "Correct a family of p-values for multiple testing and return them in the original "
-        "order. Use a family-wise method (bonferroni, sidak, holm, holm-sidak) to control any "
-        "false positive, or a false-discovery-rate method (fdr_bh, fdr_by) when some are "
-        "tolerable. This does not rerun the tests."
+        "order. Family-wise methods (bonferroni, sidak, holm, holm-sidak) control the chance "
+        "of one or more false rejections. False-discovery-rate methods (fdr_bh, fdr_by) "
+        "control the expected proportion of false discoveries. This tool does not rerun the "
+        "tests."
     ),
 )
 def adjust_p_values(
@@ -148,19 +139,17 @@ def adjust_p_values(
     method: Method,
     alpha: Alpha = 0.05,
 ) -> dict[str, Any]:
-    """Apply a multiple-testing correction."""
     return H.adjust_p_values(p_values, method, alpha)
 
 
 @mcp.tool(
     annotations=READ_ONLY,
     description=(
-        "Sample size and statistical power, for planning an experiment before it runs. "
-        "Give any three of effect size, sample size (n), alpha and power, and the fourth is "
-        "solved for — most often n, to answer 'how many do I need?'. For two_proportions you "
-        "can pass the two rates you care about (e.g. 0.10 and 0.12) instead of a standardized "
-        "effect size; for the t designs, pass the difference you care about and the standard "
-        "deviation you expect. This plans an experiment; it does not test data."
+        "Plan sample size or statistical power before collecting data. Leave one of effect "
+        "size, n, alpha, or power unspecified; Askance solves for it. For two_proportions, "
+        "you may pass two rates instead of Cohen's h. For t-test designs, you may pass a "
+        "difference and expected standard deviation instead of Cohen's d. This tool does "
+        "not test observed data."
     ),
 )
 def analyze_power(
@@ -178,7 +167,7 @@ def analyze_power(
     ] = 0.05,
     power: Annotated[
         float | None,
-        Field(description="Probability of detecting the effect; 0.8 is conventional."),
+        Field(description="Probability of detecting the effect; 0.8 is a common target."),
     ] = None,
     ratio: Annotated[
         float, Field(description="Second group size divided by the first; two-group designs.")
@@ -198,14 +187,12 @@ def analyze_power(
         float | None, Field(description="t designs: the standard deviation you expect.")
     ] = None,
 ) -> dict[str, Any]:
-    """Solve a power or sample-size question."""
     return H.analyze_power(
         design, effect_size, n, alpha, power, ratio, groups, proportions, difference, std_dev
     )
 
 
 def main() -> None:
-    """Serve over stdio. Protocol frames go to stdout; anything else must go to stderr."""
     mcp.run(transport="stdio")
 
 

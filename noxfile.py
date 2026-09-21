@@ -1,10 +1,7 @@
-"""Automated sessions: `nox` runs everything, `nox -s tests` or `nox -s lint` runs one.
+"""Nox sessions for tests, linting, formatting, and skill validation.
 
-The hooks in .pre-commit-config.yaml call these same sessions, so each check is defined
-once here rather than once for nox and again for the hooks.
-
-The tests session installs the built wheel rather than the source tree, so a packaging
-mistake fails here instead of at the agent that tries to start the server.
+Git hooks call these sessions instead of defining separate checks. The test session installs
+the built package, so packaging errors fail before an agent starts the server.
 """
 
 from pathlib import Path
@@ -35,7 +32,7 @@ def lint(session: nox.Session) -> None:
 
 @nox.session
 def format(session: nox.Session) -> None:
-    """Fix what lint reports, and report whatever is left."""
+    """Apply Ruff's safe fixes and formatter."""
     session.install(RUFF)
     session.run("ruff", "check", "--fix", ".", *session.posargs)
     session.run("ruff", "format", ".")

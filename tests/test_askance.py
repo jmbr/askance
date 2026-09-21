@@ -1,12 +1,7 @@
-"""One suite: statistical parity, input validation, and the MCP surface.
+"""Statistical parity, validation, and MCP integration tests.
 
-The parity tests exist because Askance's whole claim is that it reports what SciPy and
-statsmodels compute. Anything that silently diverges from the backend is the failure the
-server exists to prevent, so every advertised test is compared with a direct backend call.
-
-The subprocess test at the end is the one that catches an install problem rather than a code
-problem: agents launch the server with no activated virtualenv, from a directory that is not
-this checkout, so that is how it is launched here.
+Every advertised calculation is compared with a direct backend call. The subprocess test
+launches the installed command from an unrelated directory without an activated virtualenv.
 """
 
 from __future__ import annotations
@@ -50,7 +45,6 @@ pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
 
 def _expected(test: str) -> tuple[float, float]:
-    """What the backend returns for the fixture, called directly."""
     match test:
         case "one_sample_t":
             r = stats.ttest_1samp(A, popmean=3.0)
@@ -82,7 +76,6 @@ def _expected(test: str) -> tuple[float, float]:
 
 
 def _run(test: str) -> dict:
-    """Run the fixture for `test` through Askance."""
     spec = H.TESTS[test]
     if spec["tool"] == "test_binomial":
         return H.run_binomial_test(7, 20, 0.5)
@@ -94,7 +87,6 @@ def _run(test: str) -> dict:
 
 @pytest.mark.parametrize("test", list(H.TESTS))
 def test_matches_the_backend(test: str) -> None:
-    """Every advertised test reports exactly what its backend computed."""
     statistic, p_value = _expected(test)
     result = _run(test)
     assert result["statistic"] == pytest.approx(statistic)
@@ -123,7 +115,7 @@ def test_corrections_match_statsmodels(method: str) -> None:
 
 
 def test_correction_preserves_the_caller_order() -> None:
-    """Rank-based methods sort internally; the caller's order must survive that."""
+    """statsmodels may sort internally; results must retain the input order."""
     result = H.adjust_p_values([0.9, 0.001, 0.5], "holm")
     assert result["reject"] == [False, True, False]
 
@@ -154,7 +146,7 @@ def test_chi_square_reports_expected_counts_and_correction() -> None:
 
 
 def test_undefined_p_value_is_reported_rather_than_invented() -> None:
-    """Constant input makes the statistic undefined; that must not become a decision."""
+    """An undefined backend result must not become a decision."""
     result = H.run_samples_test("pearson_correlation", [[1.0, 1.0, 1.0], [1.0, 2.0, 3.0]])
     assert result["p_value"] is None
     assert result["decision"] is None
@@ -209,7 +201,7 @@ def test_bad_input_is_refused_with_a_usable_message(call, message: str) -> None:
 
 
 def test_booleans_are_not_numbers() -> None:
-    """`True` is an int in Python; accepting it silently would corrupt a sample."""
+    """Python treats bool as int, but accepting it would corrupt numeric input."""
     with pytest.raises(H.AskanceError, match="must be a number"):
         H.run_samples_test("one_sample_t", [[True, False, True]], reference=0.5)
 
@@ -255,7 +247,7 @@ def test_power_matches_statsmodels(design: str) -> None:
     )
     assert result["solved_for"] == "n"
     assert result["n_exact"] == pytest.approx(expected)
-    # Rounded up, never down: a sample size rounded down is an under-powered study.
+    # Rounding down would produce less power than requested.
     assert result["n"] == math.ceil(expected)
     assert result["method"]["class"] == H.POWER_DESIGNS[design]["backend"]
     json.loads(json.dumps(result, allow_nan=False))
@@ -264,15 +256,13 @@ def test_power_matches_statsmodels(design: str) -> None:
 @pytest.mark.parametrize("unknown", ["effect_size", "n", "alpha", "power"])
 def test_solves_for_whichever_is_left_out(unknown: str) -> None:
     full = {"effect_size": 0.5, "n": 64.0, "alpha": 0.05, "power": 0.8}
-    # Set the unknown to None rather than omitting it: alpha defaults to 0.05, so leaving it
-    # out asks for the conventional level rather than asking to solve for it.
+    # alpha defaults to 0.05, so solving for it requires an explicit None.
     known = {k: (None if k == unknown else v) for k, v in full.items()}
     result = H.analyze_power("independent_t", **known)
     assert result["solved_for"] == unknown
     assert result[unknown] is not None
 
-    # Feed the answer back and solve for a different quantity: it should return the input
-    # the first call was given. A solver that is internally inconsistent fails here.
+    # Round-trip through a second unknown to check the solver is internally consistent.
     answer = result.get("n_exact", result[unknown]) if unknown == "n" else result[unknown]
     target = "power" if unknown != "power" else "n"
     roundtrip = dict(full)
@@ -283,7 +273,7 @@ def test_solves_for_whichever_is_left_out(unknown: str) -> None:
 
 
 def test_proportions_become_cohens_h() -> None:
-    """Nobody knows their Cohen's h; they know they convert at 10% and want 12%."""
+    """Callers may supply rates instead of calculating Cohen's h."""
     result = H.analyze_power("two_proportions", proportions=[0.10, 0.12], power=0.8)
     expected = abs(float(proportion_effectsize(0.12, 0.10)))
     assert result["effect_size"] == pytest.approx(expected)
@@ -300,7 +290,7 @@ def test_difference_and_spread_become_cohens_d() -> None:
 
 
 def test_sample_size_is_reported_for_the_right_thing() -> None:
-    """statsmodels means different things by n; reporting the wrong one halves a study."""
+    """Each statsmodels solver assigns a different meaning to sample size."""
     assert "first group" in H.POWER_DESIGNS["independent_t"]["n_is"]
     assert "total" in H.POWER_DESIGNS["one_way_anova"]["n_is"]
     assert H.analyze_power("independent_t", effect_size=0.5, power=0.8)["n_is"] == (
@@ -312,10 +302,10 @@ def test_sample_size_is_reported_for_the_right_thing() -> None:
     ("call", "message"),
     [
         (lambda: H.analyze_power("wilcoxon", effect_size=0.5, power=0.8), "unknown design"),
-        (lambda: H.analyze_power("independent_t", effect_size=0.5), "exactly three"),
+        (lambda: H.analyze_power("independent_t", effect_size=0.5), "leave exactly one"),
         (
             lambda: H.analyze_power("independent_t", effect_size=0.5, n=64, power=0.8),
-            "exactly three",
+            "leave exactly one",
         ),
         (
             lambda: H.analyze_power("independent_t", effect_size=0.5, proportions=[0.1, 0.2]),
@@ -394,13 +384,24 @@ def test_every_advertised_test_is_callable() -> None:
 
 
 def test_readme_documents_exactly_the_supported_ids() -> None:
-    """Prose is not executed, so it drifts silently. This is the cheap guard."""
+    """Keep the documented IDs in sync with the runtime catalogs."""
     readme = (ROOT / "README.md").read_text()
-    for name in list(H.TESTS) + list(H.CORRECTION_METHODS):
+    supported = set(H.TESTS) | set(H.CORRECTION_METHODS) | set(H.POWER_DESIGNS)
+    for name in supported:
         assert f"`{name}`" in readme, f"README does not document {name}"
     documented = set(re.findall(r"`([a-z0-9_]+)`", readme))
-    for stale in documented - set(H.TESTS) - set(H.CORRECTION_METHODS):
+    for stale in documented - supported:
         assert not stale.endswith("_test"), f"README cites a test id that no longer exists: {stale}"
+
+
+def test_readme_example_matches_scipy() -> None:
+    readme = (ROOT / "README.md").read_text()
+    result = H.run_samples_test(
+        "independent_t",
+        [[2.1, 3.4, 1.9, 5.6, 4.2], [4.5, 5.1, 3.9, 6.2, 5.8]],
+    )
+    for key in ("statistic", "p_value", "decision", "degrees_of_freedom"):
+        assert f'"{key}": {json.dumps(result[key])}' in readme
 
 
 # -- the MCP surface -------------------------------------------------------
@@ -424,7 +425,6 @@ async def test_tools_are_discoverable_and_read_only() -> None:
         assert tool.annotations.destructive_hint is False
         assert tool.annotations.idempotent_hint is True
         assert tool.description
-    # The test ids in the schema come from the catalog, so they cannot drift from it.
     enum = tools["test_samples"].input_schema["properties"]["test"]["enum"]
     assert enum == [t for t, s in H.TESTS.items() if s["tool"] == "test_samples"]
 
@@ -453,7 +453,7 @@ async def test_an_invalid_call_explains_itself_to_the_caller() -> None:
 
 @pytest.mark.anyio
 async def test_the_installed_command_serves_from_a_stripped_environment() -> None:
-    """How an agent actually starts it: no activated virtualenv, unrelated directory."""
+    """The installed command must not depend on an activated environment or checkout path."""
     command = Path(sys.executable).parent / "askance"
     if not command.exists():  # pragma: no cover - depends on the local install
         pytest.skip("askance is not installed in this environment")

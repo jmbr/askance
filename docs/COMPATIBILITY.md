@@ -1,7 +1,7 @@
 # Compatibility
 
-What was actually run against this release, and how. Anything not listed here is untested,
-not unsupported: nobody has checked it.
+This file records the client and dependency versions tested with each Askance release.
+Features not listed here may work, but have not been tested.
 
 ## v0.2.0
 
@@ -34,7 +34,7 @@ copilot mcp add askance -- /home/you/.local/bin/askance
 | Tool call | `test_samples` / `independent_t` returned `p_value` 0.08001624746364379 |
 | Matches the backend | Identical to `scipy.stats.ttest_ind(..., equal_var=False)` |
 | Invalid call | `paired_t is paired, so every sample must have the same length, got [3, 2]` |
-| Power analysis (v0.2.0) | `analyze_power` sized a 10% -> 12% A/B test at 3,835 per arm, matching a direct `NormalIndPower` call |
+| Power analysis | `analyze_power` sized a 10% to 12% A/B test at 3,835 per arm, matching a direct `NormalIndPower` call |
 
 A project-level `.mcp.json` is also supported, but Copilot CLI only loads it after the folder
 is trusted. If the server does not appear, trust the folder or use the user-level
@@ -47,19 +47,19 @@ Pi has no built-in MCP support. It was tested with the `pi-mcp-adapter` extensio
 
 | Check | Result |
 |---|---|
-| Discovery | `askance` reported with 5 tools |
+| Discovery | `askance` reported with 6 tools |
 | Tool call | Same `p_value` as Copilot CLI and SciPy, to the last digit |
 | Invalid call | `Error executing tool test_samples: paired_t is paired, ...` |
+| Power analysis | `analyze_power` sized a 10% to 12% A/B test at 3,835 observations per arm |
 
-The adapter exposes tools through its proxy by default and prefixes their names, so
-`test_samples` is called as `askance_test_samples`. That is the adapter's naming, not
-Askance's. The adapter's default `legacy` protocol negotiation was used.
+The adapter exposes tools through its proxy by default and prefixes each name with the
+server name, so `test_samples` becomes `askance_test_samples`. The adapter's default
+`legacy` protocol negotiation was used.
 
 The adapter's `directTools` mode was not tested.
 
 ## Not tested
 
-Copilot cloud agent, Copilot code review, the Copilot SDK, VS Code, Streamable HTTP
-deployment, and Windows or macOS. The server uses only the tools-only subset of MCP and
-writes protocol frames to stdout alone, so nothing there is expected to be a problem, but
-expectation is not a test result.
+Copilot cloud agent, Copilot code review, the Copilot SDK, VS Code, Streamable HTTP,
+Windows, and macOS. Askance exposes MCP tools only and writes protocol frames to stdout,
+but those properties do not replace client-specific testing.

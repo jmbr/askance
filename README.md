@@ -1,11 +1,10 @@
 # Askance — hypothesis testing for coding agents
 
-An MCP server that runs common statistical tests. SciPy and statsmodels do the arithmetic;
-Askance checks the inputs, reports what was actually run, and tells the agent what the result
-does and does not mean.
+Askance is an MCP server for common statistical tests. SciPy and statsmodels perform the
+calculations; Askance validates the inputs and reports the backend, options, and versions used.
 
-It will not choose a test for you, will not claim an assumption holds, and will not report a
-large p-value as evidence that nothing is going on.
+Askance does not choose a test, claim that assumptions hold, or treat a large p-value as
+evidence that the null hypothesis is true.
 
 ## Install
 
@@ -51,23 +50,25 @@ names with the server name.
 
 ## Optional: the skill
 
-The server gives an agent the tests. The bundled skill teaches it *when* to reach for them,
-so "did the change help?" runs a real test instead of getting an eyeballed answer.
+The server exposes statistical operations. The bundled skill teaches an agent when to use
+them, so a question such as "did the change help?" calls Askance instead of relying on visual
+inspection.
 
 ```bash
 ln -s "$PWD/skills/askance" ~/.agents/skills/askance        # Copilot CLI
 ln -s ../../../.agents/skills/askance ~/.pi/agent/skills/   # Pi
 ```
 
-It follows the [Agent Skills spec](https://agentskills.io/specification), so
-`skills-ref validate skills/askance` checks it. `tests/skill_trigger_eval.sh` checks the part
-that actually matters: that it fires on real questions and stays quiet on near misses.
+The skill follows the [Agent Skills spec](https://agentskills.io/specification).
+`skills-ref validate skills/askance` validates its structure, and
+`tests/skill_trigger_eval.sh` checks whether it triggers on relevant prompts without
+triggering on near misses.
 
 ## Tools
 
 | Tool | What it does |
 |---|---|
-| `list_tests` | Every test and correction, with its question, null hypothesis, input, and assumptions |
+| `list_tests` | Every test, correction, and power design, with its inputs and assumptions |
 | `test_samples` | Tests on raw observations |
 | `test_contingency` | Tests on a table of counts |
 | `test_binomial` | Exact test on a count of successes |
@@ -112,8 +113,8 @@ for that; it does not rerun anything.
 |---|---|
 | `bonferroni` | Family-wise error rate, single step |
 | `sidak` | Family-wise error rate, single step |
-| `holm` | Family-wise error rate, step down |
-| `holm-sidak` | Family-wise error rate, step down |
+| `holm` | Family-wise error rate, step-down |
+| `holm-sidak` | Family-wise error rate, step-down |
 | `fdr_bh` | False discovery rate (Benjamini-Hochberg) |
 | `fdr_by` | False discovery rate under dependence (Benjamini-Yekutieli) |
 
@@ -125,48 +126,57 @@ Call `test_samples`:
 {"test": "independent_t", "samples": [[2.1, 3.4, 1.9, 5.6, 4.2], [4.5, 5.1, 3.9, 6.2, 5.8]]}
 ```
 
-Result:
+Selected result fields:
 
 ```json
 {
   "test": "independent_t",
   "null_hypothesis": "The two population means are equal.",
-  "statistic": -2.6607,
-  "p_value": 0.0298,
+  "statistic": -2.065981019092757,
+  "p_value": 0.08001624746364379,
   "alpha": 0.05,
-  "decision": "reject_null",
+  "decision": "fail_to_reject",
   "alternative": "two-sided",
   "sample_sizes": [5, 5],
-  "degrees_of_freedom": 7.7238,
+  "degrees_of_freedom": 6.61351768277725,
   "method": {
     "function": "scipy.stats.ttest_ind",
     "options": {"equal_var": false, "alternative": "two-sided"}
   },
-  "versions": {"askance": "0.2.0", "scipy": "1.18.1"},
   "warnings": []
 }
 ```
 
-Every result carries the backend function and options it used, so a number can be traced back
-to the call that produced it.
+Every result identifies the backend function and options that produced it.
 
 ## Planning an experiment
 
-`analyze_power` answers the question that comes before a test. Give any three of effect
-size, `n`, `alpha` and `power`; the fourth is solved for.
+Use `analyze_power` before collecting data. Provide any three of effect size, `n`, `alpha`,
+and `power`; Askance solves for the fourth.
+
+Supported designs are `one_sample_t`, `paired_t`, `independent_t`, `two_proportions`,
+`one_way_anova`, and `chi_square`.
 
 ```json
 {"design": "two_proportions", "proportions": [0.10, 0.12], "power": 0.8}
 ```
 
 ```json
-{"design": "two_proportions", "solved_for": "n", "n": 3835, "n_exact": 3834.59,
- "n_is": "observations in the first group", "effect_size": 0.0639,
- "effect_size_metric": "Cohen's h", "power": 0.8, "alpha": 0.05}
+{
+  "design": "two_proportions",
+  "solved_for": "n",
+  "n": 3835,
+  "n_exact": 3834.59,
+  "n_is": "observations in the first group",
+  "effect_size": 0.0639,
+  "effect_size_metric": "Cohen's h",
+  "power": 0.8,
+  "alpha": 0.05
+}
 ```
 
-You rarely know a standardized effect size, so pass what you actually mean: two
-`proportions` for rates, or a `difference` and the `std_dev` you expect for the t designs.
+If you do not know the standardized effect size, pass the underlying quantities: two
+`proportions` for rates, or a `difference` and expected `std_dev` for a t-test design.
 
 Read `n_is` before quoting the number — for two-group designs it counts *one* group.
 Sample sizes are rounded up, since rounding down under-powers the study.
@@ -175,16 +185,16 @@ Sample sizes are rounded up, since rounding down under-powers the study.
 
 - `decision` is `reject_null` when `p_value < alpha`, otherwise `fail_to_reject`.
   **`fail_to_reject` is not evidence that the null hypothesis is true.** It means the data
-  were not decisive, which is also what a small sample looks like.
+  were not decisive; limited sample size is one possible reason.
 - A p-value is not an effect size. A tiny p-value from a large sample can accompany a
   difference too small to care about. Look at the data, not only the verdict.
 - `alpha` is a threshold you chose, not a property of the data.
 - `decision` is `null` when the backend could not define a p-value, typically from constant
-  input. `warnings` says so rather than inventing an answer.
+  input. `warnings` explains why the result is undefined.
 - The assumptions in `list_tests` are never checked for you. Askance reports what a test
   assumes; deciding whether that holds is your job.
-- Choosing a test after seeing which one gives the smallest p-value invalidates the p-value.
-  Pick the test from the question you are asking.
+- Choosing among tests after comparing their p-values introduces selection bias. Choose the
+  test from the study design and question before inspecting its result.
 
 ## Input rules
 
@@ -200,12 +210,12 @@ Proportion z-tests, equivalence/TOST, effect sizes for the tests, post-hoc pairw
 comparisons, normality and variance diagnostics, permutation and bootstrap methods,
 regression and model diagnostics, and survival analysis. Power analysis covers the
 parametric designs only — there is none for the rank-based tests or the correlations,
-because statsmodels has no solver for them and approximating one would be inventing
-statistics. Open an issue if you need something here.
+because statsmodels has no corresponding solver. Askance does not approximate unsupported
+power analyses. Open an issue if you need something here.
 
 ## Development
 
-`nox` runs the whole thing on every supported Python:
+`nox` runs all checks on every supported Python:
 
 ```bash
 uvx nox              # tests on 3.12 and 3.13, then lint and skill validation
@@ -228,14 +238,14 @@ After changing the source, reinstall the tool with `uv tool install . --reinstal
 `--force` replaces the executable but reuses a wheel cached against the unchanged version,
 so an agent keeps talking to the old server.
 
-Versions are not set by hand. python-semantic-release reads the commit history on each push
-to `main`: `feat:` is a minor bump, `fix:` a patch one, and everything else releases
-nothing. `CHANGELOG.md`, the tag and `project.version` are generated output. See
-[AGENTS.md](AGENTS.md#releases).
+Do not set versions manually. On each push to `main`, python-semantic-release derives the
+next version from commit subjects: `feat:` produces a minor bump, `fix:` a patch bump, and
+other types do not release. It generates `CHANGELOG.md`, the tag, and `project.version`.
+See [AGENTS.md](AGENTS.md#releases).
 
-[prek](https://github.com/j178/prek) runs those same nox sessions as git hooks, so the
-hooks and `nox` cannot disagree: formatting and skill validation on every commit, the
-test suite on every push. It also scans staged changes for secrets with
+[prek](https://github.com/j178/prek) runs the same nox sessions as git hooks: formatting
+and skill validation on every commit, and the full test suite on every push. It also scans
+staged changes for secrets with
 [betterleaks](https://github.com/betterleaks/betterleaks).
 
 ```bash

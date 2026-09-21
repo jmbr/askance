@@ -1,12 +1,7 @@
-"""Hypothesis tests, backed by SciPy and statsmodels.
+"""Statistical operations and metadata for Askance.
 
-This module is the source of truth for which tests exist, what they need, and how they are
-dispatched. `TESTS` drives both the MCP `list_tests` tool and the dispatch below, so a test
-cannot be advertised without being callable, or renamed in one place only.
-
-Askance does not implement statistics. Each entry names the backend function that does the
-work; this module validates inputs, normalizes results to JSON-safe values, and reports the
-options and versions a result depends on.
+`TESTS` is the source of truth for the catalog and dispatch. SciPy and statsmodels perform
+the calculations; this module validates inputs and normalizes their results for MCP.
 """
 
 from __future__ import annotations
@@ -31,7 +26,7 @@ from statsmodels.stats.proportion import proportion_effectsize
 
 ALTERNATIVES = ("two-sided", "less", "greater")
 
-# statsmodels' own spelling, so no mapping table can drift out of date.
+# These keys are passed directly to statsmodels.stats.multitest.multipletests.
 CORRECTION_METHODS = {
     "bonferroni": "Single-step Bonferroni; controls the family-wise error rate.",
     "sidak": "Single-step Sidak; controls the family-wise error rate.",
@@ -41,9 +36,8 @@ CORRECTION_METHODS = {
     "fdr_by": "Benjamini-Yekutieli; controls the false discovery rate under dependence.",
 }
 
-# Power designs. `n_is` matters: statsmodels means different things by sample size across
-# these classes - total observations for some, the first group's for others - and reporting
-# the wrong one would understate a study by half.
+# statsmodels uses `n` differently across solvers. `n_is` tells callers whether the result
+# counts all observations, one group, or matched pairs.
 POWER_DESIGNS: dict[str, dict[str, Any]] = {
     "one_sample_t": {
         "solver": TTestPower,
@@ -96,8 +90,6 @@ POWER_DESIGNS: dict[str, dict[str, Any]] = {
     },
 }
 
-# Cohen's d can be given directly or derived from a difference the caller actually cares
-# about ("20ms faster") divided by the spread they expect. Nobody has a d to hand.
 DERIVES_D = ("one_sample_t", "paired_t", "independent_t")
 
 TESTS: dict[str, dict[str, Any]] = {
@@ -177,7 +169,7 @@ TESTS: dict[str, dict[str, Any]] = {
         "assumptions": [
             "The samples are independent.",
             "Residuals are approximately normal.",
-            "Group variances are equal; use kruskal_wallis or a Welch ANOVA if not.",
+            "Group variances are equal. Askance does not currently provide Welch ANOVA.",
         ],
     },
     "kruskal_wallis": {
@@ -240,7 +232,7 @@ TESTS: dict[str, dict[str, Any]] = {
         "backend": "scipy.stats.fisher_exact",
         "assumptions": [
             "Observations are independent.",
-            "An exact test, so it stays valid for small counts.",
+            "The exact calculation remains valid for small counts.",
         ],
     },
     "binomial_exact": {
@@ -251,18 +243,17 @@ TESTS: dict[str, dict[str, Any]] = {
         "backend": "scipy.stats.binomtest",
         "assumptions": [
             "Independent trials with a constant success probability.",
-            "An exact test, so no large-sample approximation is used.",
+            "The calculation is exact; it does not use a large-sample approximation.",
         ],
     },
 }
 
 
 class AskanceError(ToolError, ValueError):
-    """An invalid request, with a message meant for the caller.
+    """Caller-visible validation error.
 
-    A `ToolError` so the MCP layer forwards the message to the agent: any other exception
-    type is treated as a crash and the agent is told only that the tool failed. Also a
-    `ValueError` so callers using this module as a plain library can catch it as one.
+    `ToolError` preserves the message in MCP responses. `ValueError` supports callers that
+    use this module without MCP.
     """
 
 
@@ -387,7 +378,6 @@ def _result(
             "The backend returned an undefined p-value, usually from constant or degenerate "
             "input. No decision can be made."
         )
-    if p_value is None:
         decision = None
     else:
         decision = "reject_null" if p_value < alpha else "fail_to_reject"
@@ -669,10 +659,7 @@ def _effect_size(
             if not 0.0 <= p <= 1.0:
                 raise AskanceError(f"proportions must be between 0 and 1, got {p}")
         if first == second:
-            raise AskanceError(
-                "the two proportions are equal, so there is no effect to detect; no sample "
-                "size can distinguish them"
-            )
+            raise AskanceError("the two proportions are equal, so there is no effect to detect")
         derived = float(proportion_effectsize(second, first))
         return abs(derived), {"from": "proportions", "proportions": [first, second]}
 
@@ -684,9 +671,7 @@ def _effect_size(
         size = abs(_finite(difference, "difference"))
         spread = _positive(std_dev, "std_dev")
         if size == 0:
-            raise AskanceError(
-                "a difference of zero is not an effect to detect; no sample size can find it"
-            )
+            raise AskanceError("a difference of zero leaves no nonzero effect to detect")
         return size / spread, {
             "from": "difference / std_dev",
             "difference": size,
@@ -726,10 +711,10 @@ def analyze_power(
     ]
     if len(unknowns) != 1:
         raise AskanceError(
-            "give exactly three of effect_size (or the quantities to derive it), n, alpha and "
-            f"power, leaving the fourth out to be solved for; {len(unknowns)} were left out "
-            f"({', '.join(unknowns) or 'none'}). alpha defaults to 0.05, so solving for it "
-            "needs an explicit alpha=None."
+            "leave exactly one of effect_size, n, alpha, and power unspecified. effect_size "
+            "may instead be derived from proportions or from difference and std_dev. "
+            f"Unspecified: {', '.join(unknowns) or 'none'}. To solve for alpha, pass "
+            "alpha=None because its default is 0.05."
         )
     solved_for = unknowns[0]
 
@@ -750,9 +735,7 @@ def analyze_power(
     if spec.get("accepts_ratio"):
         arguments["ratio"] = _positive(ratio, "ratio")
     elif ratio != 1.0:
-        raise AskanceError(
-            f"{design} compares no groups of unequal size, so it does not use `ratio`"
-        )
+        raise AskanceError(f"{design} does not use `ratio`")
 
     if "groups_arg" in spec:
         if groups is None:
@@ -770,7 +753,7 @@ def analyze_power(
         except Exception as exc:
             raise AskanceError(
                 f"the solver could not find a {solved_for} for this combination: {exc}. "
-                "Very small effects need very large samples, and some combinations have no "
+                "Small effects may require very large samples, and some combinations have no "
                 "solution at all."
             ) from exc
 
@@ -800,7 +783,6 @@ def analyze_power(
     if "groups_arg" in spec:
         result["method"]["options"][spec["groups_arg"]] = groups
     if solved_for == "n":
-        # Rounded up: rounding a sample size down silently under-powers the study.
         result["n_exact"] = _number(answer)
     if result["method"]["options"].get("ratio") is None:
         result["method"]["options"].pop("ratio", None)
@@ -849,8 +831,7 @@ def list_tests() -> dict[str, Any]:
             "A p-value at or above alpha is reported as fail_to_reject, which is not evidence "
             "that the null hypothesis is true.",
             "Missing and non-finite values are rejected; clean the data before calling.",
-            "Power designs answer 'how many do I need?' before an experiment runs; the tests "
-            "answer 'is this difference real?' after it has.",
+            "Use power designs before collecting data and hypothesis tests afterward.",
         ],
         "versions": {
             "askance": version("askance"),

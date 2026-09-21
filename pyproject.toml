@@ -38,25 +38,19 @@ line-length = 100
 [tool.ruff.lint]
 select = ["F", "E", "W", "I", "UP"]
 
-# The only tool that may write a version, a tag or the changelog. Message validation is a
-# separate hook that cannot bump anything (see .pre-commit-config.yaml), so there is no
-# second engine to keep in step.
+# Only semantic-release may update the version, tag, or changelog.
 [tool.semantic_release]
 commit_parser = "conventional"
-# `project.version` is the single source; the package reads it back through installed
-# metadata, so there is nowhere else for it to drift to.
+# The package reads this value through installed metadata.
 version_toml = ["pyproject.toml:project.version"]
 tag_format = "v{version}"
 allow_zero_version = true
-# Below 1.0 a breaking change stays a minor bump. Going to 2.0 on the first `!` would claim
-# a stability askance has not offered yet; revisit at 1.0.
+# Below 1.0, a breaking change produces a minor bump. Revisit at 1.0.
 major_on_zero = false
-# Nothing is published: a release is a tag, a changelog entry and a Forgejo release, and
-# installation stays `uv tool install git+<url>@vX.Y.Z`.
+# Releases create no package artifacts.
 build_command = ""
 upload_to_vcs_release = false
-# The release commit has to pass our own commit-msg hook, and `chore` releases nothing, so
-# it cannot trigger a second release.
+# `chore` passes the commit hook but does not trigger another release.
 commit_message = "chore(release): v{version}"
 commit_author = "askance release bot <askance@localhost>"
 
@@ -64,8 +58,7 @@ commit_author = "askance release bot <askance@localhost>"
 match = "main"
 
 [tool.semantic_release.remote]
-# The runner reaches the API through its internal service name, while generated links use
-# the public URL. This instance deliberately speaks HTTP.
+# The runner supplies the internal API URL through GITEA_SERVER_URL.
 type = "gitea"
 domain = "http://localhost:3000"
 api_domain = { env = "GITEA_SERVER_URL" }
@@ -73,5 +66,5 @@ token = { env = "GITEA_TOKEN" }
 insecure = true
 
 [tool.semantic_release.changelog]
-# Types that change nothing a user of the package can observe.
+# Exclude maintenance-only changes from the changelog.
 exclude_commit_patterns = ["^chore(\\(.*\\))?: ", "^ci(\\(.*\\))?: ", "^style(\\(.*\\))?: "]

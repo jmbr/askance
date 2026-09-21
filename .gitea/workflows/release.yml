@@ -5,12 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# This runner's schema supports only the read-all/write-all shorthand. A release must push
-# its commit and tag and create the release, so read-only is insufficient.
+# Releases push a commit and tag and create a Forgejo release.
 permissions: write-all
 
-# Cancelling a half-finished release leaves a tag without a release, or the reverse, so
-# queue instead.
+# Queue releases to avoid partial state.
 concurrency:
   group: release-main
   cancel-in-progress: false
@@ -21,13 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Without the tags semantic-release cannot see the previous version, and would
-          # compute the next one from the whole history.
+          # semantic-release needs prior tags to calculate the next version.
           fetch-depth: 0
           token: ${{ forgejo.token }}
 
-      # The release commit lands on main and triggers this workflow again. It contains no
-      # releasable change, so without this the workflow answers itself forever.
+      # The generated release commit triggers this workflow again; stop before doing work.
       - name: Decide whether to run
         id: guard
         shell: bash
@@ -49,9 +45,7 @@ jobs:
         if: steps.guard.outputs.run == 'true'
         run: uv sync --extra dev
 
-      # The same sessions the hooks run, so a release cannot ship what a contributor's
-      # machine would have rejected. A failure here means no tag. `uvx` rather than
-      # `uv run`, because nox is a tool this project uses, not a dependency it has.
+      # `uvx` runs nox as a tool; nox is not a project dependency.
       - name: Check
         if: steps.guard.outputs.run == 'true'
         run: uvx nox -s lint skills tests
@@ -59,9 +53,7 @@ jobs:
       - name: Release
         if: steps.guard.outputs.run == 'true'
         env:
-          # Named for python-semantic-release, not for the forge: its remote type is
-          # `gitea`, so these are the variable names its own config reads. The values are
-          # the runner's short-lived token and internal API URL, not stored secrets.
+          # python-semantic-release's Gitea remote reads these variable names.
           GITEA_SERVER_URL: ${{ forgejo.server_url }}
           GITEA_TOKEN: ${{ forgejo.token }}
         run: uv run semantic-release version
