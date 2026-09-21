@@ -9,10 +9,10 @@ description: >
   the user never says "statistics", "significance", or "p-value" and only asks
   whether something improved, whether a change helped, whether one option is
   faster or better, or whether a difference could be chance. Also use when
-  several comparisons need their p-values corrected. Skip it when no measured
-  data is being compared: designing or sizing a future experiment, summary
-  statistics, plotting, a lone reading against a threshold, or writing prose
-  that merely cites numbers.
+  several comparisons need their p-values corrected, or to size an experiment
+  before running it — "how many users do I need to detect this?". Skip it when
+  nothing is being compared or planned: summary statistics, plotting, a lone
+  reading against a threshold, or writing prose that merely cites numbers.
 license: MIT
 compatibility: Requires the askance MCP server (https://github.com/jmbr/askance) configured in the client.
 ---
@@ -63,6 +63,30 @@ real effect.
 `independent_t` defaults to Welch's test, which does not assume equal
 variances. Keep that default unless you have a specific reason.
 
+## Before the experiment: how many do I need?
+
+`analyze_power` answers the question that comes *before* a test. Give any three
+of effect size, sample size, alpha and power; the fourth is solved for.
+
+Callers almost never know a standardized effect size, so pass what they
+actually said instead:
+
+| They said | Pass |
+|---|---|
+| "we convert at 10%, we want to catch 12%" | `design: two_proportions`, `proportions: [0.10, 0.12]` |
+| "we care about a 20ms improvement, spread is about 40ms" | `design: independent_t`, `difference: 20`, `std_dev: 40` |
+
+Designs: `one_sample_t`, `paired_t`, `independent_t`, `two_proportions`,
+`one_way_anova` and `chi_square` (the last two need `groups`).
+
+Read `n_is` in the result before quoting the number. For the two-group designs
+it counts **one group**, so the study needs roughly twice that in total.
+Sample sizes are rounded up, because rounding down under-powers the study.
+
+Expect the honest answer to be uncomfortable: detecting a 10% to 12% shift
+needs about 3,800 per arm. Report that plainly rather than softening it — a
+study too small to see the effect is the thing this call exists to prevent.
+
 ## Reporting the result
 
 Give the p-value, the decision, and the test you used. Then the honest part:
@@ -92,10 +116,9 @@ Give the p-value, the decision, and the test you used. Then the honest part:
 - **Never run several tests and quote the smallest p-value.** Choosing a test
   after seeing its result invalidates it. Pick from the data's shape, in step 2,
   before you look.
-- **Askance has no power or sample-size analysis**, and no effect-size or
-  equivalence tests. If asked to size a future experiment, say so plainly
-  rather than improvising a calculation — that is a different job from testing
-  data you already have.
+- **Askance has no equivalence tests (TOST)** and reports no effect sizes for
+  the tests themselves, and there is no power analysis for the rank-based tests
+  or the correlations. Say so plainly rather than improvising a calculation.
 - Counts must be whole numbers, not percentages or rates.
 
 ## Worked example

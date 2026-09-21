@@ -20,6 +20,14 @@ import scipy
 from mcp.server.mcpserver.exceptions import ToolError
 from scipy import stats
 from statsmodels.stats.multitest import multipletests
+from statsmodels.stats.power import (
+    FTestAnovaPower,
+    GofChisquarePower,
+    NormalIndPower,
+    TTestIndPower,
+    TTestPower,
+)
+from statsmodels.stats.proportion import proportion_effectsize
 
 ALTERNATIVES = ("two-sided", "less", "greater")
 
@@ -32,6 +40,65 @@ CORRECTION_METHODS = {
     "fdr_bh": "Benjamini-Hochberg; controls the false discovery rate.",
     "fdr_by": "Benjamini-Yekutieli; controls the false discovery rate under dependence.",
 }
+
+# Power designs. `n_is` matters: statsmodels means different things by sample size across
+# these classes - total observations for some, the first group's for others - and reporting
+# the wrong one would understate a study by half.
+POWER_DESIGNS: dict[str, dict[str, Any]] = {
+    "one_sample_t": {
+        "solver": TTestPower,
+        "backend": "statsmodels.stats.power.TTestPower",
+        "effect": "Cohen's d",
+        "n_is": "total observations",
+        "pairs_with": "one_sample_t",
+    },
+    "paired_t": {
+        "solver": TTestPower,
+        "backend": "statsmodels.stats.power.TTestPower",
+        "effect": "Cohen's d, on the paired differences",
+        "n_is": "number of pairs",
+        "pairs_with": "paired_t",
+    },
+    "independent_t": {
+        "solver": TTestIndPower,
+        "backend": "statsmodels.stats.power.TTestIndPower",
+        "effect": "Cohen's d",
+        "n_is": "observations in the first group",
+        "accepts_ratio": True,
+        "pairs_with": "independent_t",
+    },
+    "two_proportions": {
+        "solver": NormalIndPower,
+        "backend": "statsmodels.stats.power.NormalIndPower",
+        "effect": "Cohen's h",
+        "n_is": "observations in the first group",
+        "accepts_ratio": True,
+        "accepts_proportions": True,
+        "pairs_with": "chi_square_independence, binomial_exact",
+    },
+    "one_way_anova": {
+        "solver": FTestAnovaPower,
+        "backend": "statsmodels.stats.power.FTestAnovaPower",
+        "effect": "Cohen's f",
+        "n_is": "total observations across all groups",
+        "groups_arg": "k_groups",
+        "groups_label": "number of groups",
+        "pairs_with": "one_way_anova",
+    },
+    "chi_square": {
+        "solver": GofChisquarePower,
+        "backend": "statsmodels.stats.power.GofChisquarePower",
+        "effect": "Cohen's w",
+        "n_is": "total observations",
+        "groups_arg": "n_bins",
+        "groups_label": "number of categories",
+        "pairs_with": "chi_square_independence",
+    },
+}
+
+# Cohen's d can be given directly or derived from a difference the caller actually cares
+# about ("20ms faster") divided by the spread they expect. Nobody has a d to hand.
+DERIVES_D = ("one_sample_t", "paired_t", "independent_t")
 
 TESTS: dict[str, dict[str, Any]] = {
     "one_sample_t": {
@@ -570,6 +637,176 @@ def adjust_p_values(p_values: Any, method: str, alpha: float = 0.05) -> dict[str
     }
 
 
+def _positive(value: Any, what: str) -> float:
+    number = _finite(value, what)
+    if number <= 0:
+        raise AskanceError(f"{what} must be positive, got {number}")
+    return number
+
+
+def _effect_size(
+    design: str,
+    spec: dict[str, Any],
+    effect_size: Any,
+    proportions: Any,
+    difference: Any,
+    std_dev: Any,
+) -> tuple[float | None, dict[str, Any]]:
+    """Cohen's effect size, either supplied directly or derived from real quantities."""
+    raw_given = proportions is not None or difference is not None or std_dev is not None
+    if effect_size is not None and raw_given:
+        raise AskanceError(
+            f"give {design} either effect_size or the quantities to derive it from, not both"
+        )
+
+    if proportions is not None:
+        if not spec.get("accepts_proportions"):
+            raise AskanceError(f"{design} does not use `proportions`")
+        if not isinstance(proportions, (list, tuple)) or len(proportions) != 2:
+            raise AskanceError("proportions must be two numbers between 0 and 1, e.g. [0.10, 0.12]")
+        first, second = (_finite(p, f"proportions[{i}]") for i, p in enumerate(proportions))
+        for p in (first, second):
+            if not 0.0 <= p <= 1.0:
+                raise AskanceError(f"proportions must be between 0 and 1, got {p}")
+        if first == second:
+            raise AskanceError(
+                "the two proportions are equal, so there is no effect to detect; no sample "
+                "size can distinguish them"
+            )
+        derived = float(proportion_effectsize(second, first))
+        return abs(derived), {"from": "proportions", "proportions": [first, second]}
+
+    if difference is not None or std_dev is not None:
+        if design not in DERIVES_D:
+            raise AskanceError(f"{design} does not use `difference` and `std_dev`")
+        if difference is None or std_dev is None:
+            raise AskanceError("give both `difference` and `std_dev`, or neither")
+        size = abs(_finite(difference, "difference"))
+        spread = _positive(std_dev, "std_dev")
+        if size == 0:
+            raise AskanceError(
+                "a difference of zero is not an effect to detect; no sample size can find it"
+            )
+        return size / spread, {
+            "from": "difference / std_dev",
+            "difference": size,
+            "std_dev": spread,
+        }
+
+    if effect_size is None:
+        return None, {"from": "solved"}
+    return abs(_positive(effect_size, "effect_size")), {"from": "given"}
+
+
+def analyze_power(
+    design: str,
+    effect_size: Any = None,
+    n: Any = None,
+    alpha: Any = 0.05,
+    power: Any = None,
+    ratio: Any = 1.0,
+    groups: Any = None,
+    proportions: Any = None,
+    difference: Any = None,
+    std_dev: Any = None,
+) -> dict[str, Any]:
+    """Solve for whichever one of effect size, sample size, alpha or power is left out."""
+    if design not in POWER_DESIGNS:
+        raise AskanceError(
+            f"unknown design {design!r}; supported designs are {list(POWER_DESIGNS)}"
+        )
+    spec = POWER_DESIGNS[design]
+
+    size, effect_source = _effect_size(design, spec, effect_size, proportions, difference, std_dev)
+
+    unknowns = [
+        name
+        for name, value in (("effect_size", size), ("n", n), ("alpha", alpha), ("power", power))
+        if value is None
+    ]
+    if len(unknowns) != 1:
+        raise AskanceError(
+            "give exactly three of effect_size (or the quantities to derive it), n, alpha and "
+            f"power, leaving the fourth out to be solved for; {len(unknowns)} were left out "
+            f"({', '.join(unknowns) or 'none'}). alpha defaults to 0.05, so solving for it "
+            "needs an explicit alpha=None."
+        )
+    solved_for = unknowns[0]
+
+    if n is not None:
+        n = _positive(n, "n")
+        if n <= 1:
+            raise AskanceError(f"n must be greater than 1, got {n}")
+    if alpha is not None:
+        alpha = _alpha(alpha)
+    if power is not None:
+        power = _finite(power, "power")
+        if not 0.0 < power < 1.0:
+            raise AskanceError(f"power must be between 0 and 1 exclusive, got {power}")
+
+    arguments: dict[str, Any] = {"effect_size": size, "alpha": alpha, "power": power}
+    arguments["nobs1" if spec.get("accepts_ratio") else "nobs"] = n
+
+    if spec.get("accepts_ratio"):
+        arguments["ratio"] = _positive(ratio, "ratio")
+    elif ratio != 1.0:
+        raise AskanceError(
+            f"{design} compares no groups of unequal size, so it does not use `ratio`"
+        )
+
+    if "groups_arg" in spec:
+        if groups is None:
+            raise AskanceError(f"{design} needs `groups`: the {spec['groups_label']}")
+        if isinstance(groups, bool) or not isinstance(groups, int) or groups < 2:
+            raise AskanceError(f"groups must be an integer of at least 2, got {groups!r}")
+        arguments[spec["groups_arg"]] = groups
+    elif groups is not None:
+        raise AskanceError(f"{design} does not use `groups`")
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        try:
+            answer = float(spec["solver"]().solve_power(**arguments))
+        except Exception as exc:
+            raise AskanceError(
+                f"the solver could not find a {solved_for} for this combination: {exc}. "
+                "Very small effects need very large samples, and some combinations have no "
+                "solution at all."
+            ) from exc
+
+    if not math.isfinite(answer):
+        raise AskanceError(
+            f"the solver returned no usable {solved_for} for this combination; an effect this "
+            "small may need an impractical sample size"
+        )
+
+    resolved = {"effect_size": size, "n": n, "alpha": alpha, "power": power}
+    resolved[solved_for] = answer
+
+    result = {
+        "design": design,
+        "solved_for": solved_for,
+        "effect_size": _number(resolved["effect_size"]),
+        "effect_size_metric": spec["effect"],
+        "effect_size_source": effect_source,
+        "n": math.ceil(resolved["n"]) if solved_for == "n" else _number(resolved["n"]),
+        "n_is": spec["n_is"],
+        "alpha": _number(resolved["alpha"]),
+        "power": _number(resolved["power"]),
+        "method": {"class": spec["backend"], "options": {"ratio": arguments.get("ratio")}},
+        "versions": {"askance": version("askance"), "statsmodels": version("statsmodels")},
+        "warnings": [f"{w.category.__name__}: {w.message}" for w in captured],
+    }
+    if "groups_arg" in spec:
+        result["method"]["options"][spec["groups_arg"]] = groups
+    if solved_for == "n":
+        # Rounded up: rounding a sample size down silently under-powers the study.
+        result["n_exact"] = _number(answer)
+    if result["method"]["options"].get("ratio") is None:
+        result["method"]["options"].pop("ratio", None)
+    return result
+
+
 def list_tests() -> dict[str, Any]:
     """The catalog behind the MCP `list_tests` tool."""
     return {
@@ -597,11 +834,23 @@ def list_tests() -> dict[str, Any]:
             {"id": name, "description": description}
             for name, description in CORRECTION_METHODS.items()
         ],
+        "power_designs": [
+            {
+                "id": design,
+                "effect_size_metric": spec["effect"],
+                "n_is": spec["n_is"],
+                "pairs_with": spec["pairs_with"],
+                "backend": spec["backend"],
+            }
+            for design, spec in POWER_DESIGNS.items()
+        ],
         "notes": [
             "Askance never selects a test for you and never reports that assumptions hold.",
             "A p-value at or above alpha is reported as fail_to_reject, which is not evidence "
             "that the null hypothesis is true.",
             "Missing and non-finite values are rejected; clean the data before calling.",
+            "Power designs answer 'how many do I need?' before an experiment runs; the tests "
+            "answer 'is this difference real?' after it has.",
         ],
         "versions": {
             "askance": version("askance"),

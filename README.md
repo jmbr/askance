@@ -72,8 +72,9 @@ that actually matters: that it fires on real questions and stays quiet on near m
 | `test_contingency` | Tests on a table of counts |
 | `test_binomial` | Exact test on a count of successes |
 | `adjust_p_values` | Multiple-testing correction for a family of p-values |
+| `analyze_power` | Sample size and power, for planning an experiment before it runs |
 
-All five are read-only and compute from their arguments alone.
+All six are read-only and compute from their arguments alone.
 
 ### Tests
 
@@ -141,13 +142,34 @@ Result:
     "function": "scipy.stats.ttest_ind",
     "options": {"equal_var": false, "alternative": "two-sided"}
   },
-  "versions": {"askance": "0.1.0", "scipy": "1.18.1"},
+  "versions": {"askance": "0.2.0", "scipy": "1.18.1"},
   "warnings": []
 }
 ```
 
 Every result carries the backend function and options it used, so a number can be traced back
 to the call that produced it.
+
+## Planning an experiment
+
+`analyze_power` answers the question that comes before a test. Give any three of effect
+size, `n`, `alpha` and `power`; the fourth is solved for.
+
+```json
+{"design": "two_proportions", "proportions": [0.10, 0.12], "power": 0.8}
+```
+
+```json
+{"design": "two_proportions", "solved_for": "n", "n": 3835, "n_exact": 3834.59,
+ "n_is": "observations in the first group", "effect_size": 0.0639,
+ "effect_size_metric": "Cohen's h", "power": 0.8, "alpha": 0.05}
+```
+
+You rarely know a standardized effect size, so pass what you actually mean: two
+`proportions` for rates, or a `difference` and the `std_dev` you expect for the t designs.
+
+Read `n_is` before quoting the number — for two-group designs it counts *one* group.
+Sample sizes are rounded up, since rounding down under-powers the study.
 
 ## Reading a result
 
@@ -174,9 +196,12 @@ to the call that produced it.
 
 ## Not included
 
-Proportion z-tests, equivalence/TOST, power and sample-size analysis, effect sizes, post-hoc
-pairwise comparisons, normality and variance diagnostics, permutation and bootstrap methods,
-regression and model diagnostics, and survival analysis. Open an issue if you need one.
+Proportion z-tests, equivalence/TOST, effect sizes for the tests, post-hoc pairwise
+comparisons, normality and variance diagnostics, permutation and bootstrap methods,
+regression and model diagnostics, and survival analysis. Power analysis covers the
+parametric designs only — there is none for the rank-based tests or the correlations,
+because statsmodels has no solver for them and approximating one would be inventing
+statistics. Open an issue if you need something here.
 
 ## Development
 
@@ -198,6 +223,10 @@ uv sync --extra dev
 uv run pytest
 uv run ruff check
 ```
+
+After changing the source, reinstall the tool with `uv tool install . --reinstall`. Plain
+`--force` replaces the executable but reuses a wheel cached against the unchanged version,
+so an agent keeps talking to the old server.
 
 [prek](https://github.com/j178/prek) runs those same nox sessions as git hooks, so the
 hooks and `nox` cannot disagree: formatting and skill validation on every commit, the

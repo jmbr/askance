@@ -3,7 +3,7 @@
 What was actually run against this release, and how. Anything not listed here is untested,
 not unsupported: nobody has checked it.
 
-## v0.1.0
+## v0.2.0
 
 | Component | Version |
 |---|---|
@@ -34,6 +34,7 @@ copilot mcp add askance -- /home/you/.local/bin/askance
 | Tool call | `test_samples` / `independent_t` returned `p_value` 0.08001624746364379 |
 | Matches the backend | Identical to `scipy.stats.ttest_ind(..., equal_var=False)` |
 | Invalid call | `paired_t is paired, so every sample must have the same length, got [3, 2]` |
+| Power analysis (v0.2.0) | `analyze_power` sized a 10% -> 12% A/B test at 3,835 per arm, matching a direct `NormalIndPower` call |
 
 A project-level `.mcp.json` is also supported, but Copilot CLI only loads it after the folder
 is trusted. If the server does not appear, trust the folder or use the user-level

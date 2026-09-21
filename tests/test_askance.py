@@ -12,6 +12,7 @@ this checkout, so that is how it is launched here.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -22,6 +23,14 @@ import pytest
 from mcp import Client, StdioServerParameters
 from scipy import stats
 from statsmodels.stats.multitest import multipletests
+from statsmodels.stats.power import (
+    FTestAnovaPower,
+    GofChisquarePower,
+    NormalIndPower,
+    TTestIndPower,
+    TTestPower,
+)
+from statsmodels.stats.proportion import proportion_effectsize
 
 from askance import hypothesis as H
 from askance.server import mcp
@@ -205,6 +214,172 @@ def test_booleans_are_not_numbers() -> None:
         H.run_samples_test("one_sample_t", [[True, False, True]], reference=0.5)
 
 
+# -- power and sample size -------------------------------------------------
+
+POWER_FIXTURES = {
+    "one_sample_t": (TTestPower, {"effect_size": 0.5, "power": 0.8, "alpha": 0.05}, {}),
+    "paired_t": (TTestPower, {"effect_size": 0.6, "power": 0.9, "alpha": 0.05}, {}),
+    "independent_t": (
+        TTestIndPower,
+        {"effect_size": 0.5, "power": 0.8, "alpha": 0.05, "ratio": 1.0},
+        {},
+    ),
+    "two_proportions": (
+        NormalIndPower,
+        {"effect_size": 0.2, "power": 0.8, "alpha": 0.05, "ratio": 1.0},
+        {},
+    ),
+    "one_way_anova": (
+        FTestAnovaPower,
+        {"effect_size": 0.25, "power": 0.8, "alpha": 0.05, "k_groups": 3},
+        {"groups": 3},
+    ),
+    "chi_square": (
+        GofChisquarePower,
+        {"effect_size": 0.3, "power": 0.8, "alpha": 0.05, "n_bins": 4},
+        {"groups": 4},
+    ),
+}
+
+
+@pytest.mark.parametrize("design", list(H.POWER_DESIGNS))
+def test_power_matches_statsmodels(design: str) -> None:
+    solver, backend_args, extra = POWER_FIXTURES[design]
+    expected = float(solver().solve_power(**backend_args))
+    result = H.analyze_power(
+        design,
+        effect_size=backend_args["effect_size"],
+        power=backend_args["power"],
+        alpha=backend_args["alpha"],
+        **extra,
+    )
+    assert result["solved_for"] == "n"
+    assert result["n_exact"] == pytest.approx(expected)
+    # Rounded up, never down: a sample size rounded down is an under-powered study.
+    assert result["n"] == math.ceil(expected)
+    assert result["method"]["class"] == H.POWER_DESIGNS[design]["backend"]
+    json.loads(json.dumps(result, allow_nan=False))
+
+
+@pytest.mark.parametrize("unknown", ["effect_size", "n", "alpha", "power"])
+def test_solves_for_whichever_is_left_out(unknown: str) -> None:
+    full = {"effect_size": 0.5, "n": 64.0, "alpha": 0.05, "power": 0.8}
+    # Set the unknown to None rather than omitting it: alpha defaults to 0.05, so leaving it
+    # out asks for the conventional level rather than asking to solve for it.
+    known = {k: (None if k == unknown else v) for k, v in full.items()}
+    result = H.analyze_power("independent_t", **known)
+    assert result["solved_for"] == unknown
+    assert result[unknown] is not None
+
+    # Feed the answer back and solve for a different quantity: it should return the input
+    # the first call was given. A solver that is internally inconsistent fails here.
+    answer = result.get("n_exact", result[unknown]) if unknown == "n" else result[unknown]
+    target = "power" if unknown != "power" else "n"
+    roundtrip = dict(full)
+    roundtrip[unknown] = answer
+    roundtrip[target] = None
+    again = H.analyze_power("independent_t", **roundtrip)
+    assert again[target] == pytest.approx(full[target], rel=0.02)
+
+
+def test_proportions_become_cohens_h() -> None:
+    """Nobody knows their Cohen's h; they know they convert at 10% and want 12%."""
+    result = H.analyze_power("two_proportions", proportions=[0.10, 0.12], power=0.8)
+    expected = abs(float(proportion_effectsize(0.12, 0.10)))
+    assert result["effect_size"] == pytest.approx(expected)
+    assert result["effect_size_source"]["from"] == "proportions"
+    assert result["n"] == math.ceil(
+        float(NormalIndPower().solve_power(effect_size=expected, power=0.8, alpha=0.05, ratio=1.0))
+    )
+
+
+def test_difference_and_spread_become_cohens_d() -> None:
+    result = H.analyze_power("independent_t", difference=20.0, std_dev=40.0, power=0.8)
+    assert result["effect_size"] == pytest.approx(0.5)
+    assert result["effect_size_source"]["from"] == "difference / std_dev"
+
+
+def test_sample_size_is_reported_for_the_right_thing() -> None:
+    """statsmodels means different things by n; reporting the wrong one halves a study."""
+    assert "first group" in H.POWER_DESIGNS["independent_t"]["n_is"]
+    assert "total" in H.POWER_DESIGNS["one_way_anova"]["n_is"]
+    assert H.analyze_power("independent_t", effect_size=0.5, power=0.8)["n_is"] == (
+        "observations in the first group"
+    )
+
+
+@pytest.mark.parametrize(
+    ("call", "message"),
+    [
+        (lambda: H.analyze_power("wilcoxon", effect_size=0.5, power=0.8), "unknown design"),
+        (lambda: H.analyze_power("independent_t", effect_size=0.5), "exactly three"),
+        (
+            lambda: H.analyze_power("independent_t", effect_size=0.5, n=64, power=0.8),
+            "exactly three",
+        ),
+        (
+            lambda: H.analyze_power("independent_t", effect_size=0.5, proportions=[0.1, 0.2]),
+            "not both",
+        ),
+        (lambda: H.analyze_power("one_way_anova", effect_size=0.25, power=0.8), "needs `groups`"),
+        (
+            lambda: H.analyze_power("one_way_anova", effect_size=0.25, power=0.8, groups=1),
+            "at least 2",
+        ),
+        (
+            lambda: H.analyze_power("independent_t", effect_size=0.5, power=0.8, groups=3),
+            "does not use `groups`",
+        ),
+        (
+            lambda: H.analyze_power(
+                "one_way_anova", effect_size=0.25, power=0.8, groups=3, ratio=2
+            ),
+            "does not use `ratio`",
+        ),
+        (
+            lambda: H.analyze_power("one_sample_t", proportions=[0.1, 0.2], power=0.8),
+            "does not use `proportions`",
+        ),
+        (
+            lambda: H.analyze_power("chi_square", difference=1, std_dev=2, power=0.8, groups=3),
+            "does not use `difference`",
+        ),
+        (
+            lambda: H.analyze_power("independent_t", difference=20.0, power=0.8),
+            "both `difference` and `std_dev`",
+        ),
+        (
+            lambda: H.analyze_power("two_proportions", proportions=[0.1, 0.1], power=0.8),
+            "no effect to detect",
+        ),
+        (
+            lambda: H.analyze_power("two_proportions", proportions=[0.1, 1.5], power=0.8),
+            "between 0 and 1",
+        ),
+        (lambda: H.analyze_power("independent_t", effect_size=0, power=0.8), "must be positive"),
+        (lambda: H.analyze_power("independent_t", effect_size=0.5, power=1.5), "power must be"),
+        (
+            lambda: H.analyze_power("independent_t", effect_size=0.5, n=1, alpha=0.05),
+            "greater than 1",
+        ),
+        (
+            lambda: H.analyze_power("independent_t", effect_size=0.5, power=0.8, ratio=0),
+            "ratio must be positive",
+        ),
+    ],
+)
+def test_bad_power_request_is_refused(call, message: str) -> None:
+    with pytest.raises(H.AskanceError, match=re.escape(message)):
+        call()
+
+
+def test_catalog_lists_the_power_designs() -> None:
+    catalog = H.list_tests()
+    assert {d["id"] for d in catalog["power_designs"]} == set(H.POWER_DESIGNS)
+    for entry in catalog["power_designs"]:
+        assert entry["effect_size_metric"] and entry["n_is"]
+
+
 # -- catalog integrity -----------------------------------------------------
 
 
@@ -241,6 +416,7 @@ async def test_tools_are_discoverable_and_read_only() -> None:
         "test_contingency",
         "test_binomial",
         "adjust_p_values",
+        "analyze_power",
     }
     for tool in tools.values():
         assert tool.annotations is not None, f"{tool.name} has no annotations"
@@ -290,7 +466,7 @@ async def test_the_installed_command_serves_from_a_stripped_environment() -> Non
     async with Client(server) as client:
         tools = {t.name for t in (await client.list_tools()).tools}
         result = await client.call_tool("test_binomial", {"successes": 7, "trials": 20})
-    assert len(tools) == 5
+    assert len(tools) == 6
     assert result.structured_content["p_value"] == pytest.approx(
         float(stats.binomtest(7, 20, 0.5).pvalue)
     )

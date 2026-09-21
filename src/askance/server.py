@@ -27,6 +27,7 @@ READ_ONLY = ToolAnnotations(
 SampleTest = Literal[tuple(t for t, s in H.TESTS.items() if s["tool"] == "test_samples")]  # type: ignore[valid-type]
 ContingencyTest = Literal[tuple(t for t, s in H.TESTS.items() if s["tool"] == "test_contingency")]  # type: ignore[valid-type]
 Method = Literal[tuple(H.CORRECTION_METHODS)]  # type: ignore[valid-type]
+Design = Literal[tuple(H.POWER_DESIGNS)]  # type: ignore[valid-type]
 Alternative = Literal[H.ALTERNATIVES]  # type: ignore[valid-type]
 
 Alpha = Annotated[float, Field(gt=0, lt=1, description="Significance level.")]
@@ -149,6 +150,58 @@ def adjust_p_values(
 ) -> dict[str, Any]:
     """Apply a multiple-testing correction."""
     return H.adjust_p_values(p_values, method, alpha)
+
+
+@mcp.tool(
+    annotations=READ_ONLY,
+    description=(
+        "Sample size and statistical power, for planning an experiment before it runs. "
+        "Give any three of effect size, sample size (n), alpha and power, and the fourth is "
+        "solved for — most often n, to answer 'how many do I need?'. For two_proportions you "
+        "can pass the two rates you care about (e.g. 0.10 and 0.12) instead of a standardized "
+        "effect size; for the t designs, pass the difference you care about and the standard "
+        "deviation you expect. This plans an experiment; it does not test data."
+    ),
+)
+def analyze_power(
+    design: Design,
+    effect_size: Annotated[
+        float | None,
+        Field(description="Standardized effect (Cohen's d, h, f or w). Omit to solve for it."),
+    ] = None,
+    n: Annotated[
+        float | None,
+        Field(description="Sample size; see n_is in the result for what it counts."),
+    ] = None,
+    alpha: Annotated[
+        float | None, Field(description="Significance level. Omit to solve for it.")
+    ] = 0.05,
+    power: Annotated[
+        float | None,
+        Field(description="Probability of detecting the effect; 0.8 is conventional."),
+    ] = None,
+    ratio: Annotated[
+        float, Field(description="Second group size divided by the first; two-group designs.")
+    ] = 1.0,
+    groups: Annotated[
+        int | None,
+        Field(description="Groups (one_way_anova) or categories (chi_square)."),
+    ] = None,
+    proportions: Annotated[
+        list[float] | None,
+        Field(description="two_proportions: the two rates, e.g. [0.10, 0.12]."),
+    ] = None,
+    difference: Annotated[
+        float | None, Field(description="t designs: the difference worth detecting.")
+    ] = None,
+    std_dev: Annotated[
+        float | None, Field(description="t designs: the standard deviation you expect.")
+    ] = None,
+) -> dict[str, Any]:
+    """Solve a power or sample-size question."""
+    return H.analyze_power(
+        design, effect_size, n, alpha, power, ratio, groups, proportions, difference, std_dev
+    )
 
 
 def main() -> None:

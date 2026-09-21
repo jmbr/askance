@@ -37,15 +37,16 @@ MAIN=(
 
 # Written after the description was finalized, and deliberately harder, so a
 # clean sweep on MAIN cannot be mistaken for a description that generalizes.
-# The positives bury the comparison in a decision ("ship it or not"), and the
-# negatives sit closer to the boundary - power analysis in particular uses the
-# skill's own vocabulary for something askance cannot do.
+# The positives bury the comparison in a decision ("ship it or not"). The
+# power-analysis query was a negative until analyze_power shipped (#8); it is
+# now a positive, and so doubles as a regression test that the capability and
+# the description stayed in step.
 HOLDOUT=(
 "yes|ship-it|We shipped the new ranking model to half our users last month. Control averaged 4.2 sessions per user, treatment 4.6, about 900 users in each arm. Ship it or roll back?"
 "yes|settle-argument|Two people on my team disagree about whether their refactor made the parser faster. Ten timing runs each: old [1.42,1.38,1.51,1.45,1.39,1.48,1.44,1.41,1.50,1.43] new [1.31,1.29,1.35,1.28,1.33,1.30,1.36,1.32,1.27,1.34]. Settle it."
 "yes|survey-ordinal|I have 1-5 helpfulness scores from 12 users on the old help page [3,4,2,3,5,3,4,2,3,4,3,2] and 12 on the rewrite [4,5,4,5,3,4,5,4,4,5,3,4]. Did the rewrite land?"
 "yes|tea-leaves|Our error rate was 31 failures out of 1000 requests last week and 24 out of 1000 this week. Are we actually improving or am I reading tea leaves?"
-"no|power-analysis|What sample size would I need for an A/B test to reliably detect a 2 percent lift in conversion?"
+"yes|power-analysis|What sample size would I need for an A/B test to reliably detect a 2 percent lift in conversion?"
 "no|descriptive|Calculate the average and median of these build times: [12,15,9,22,18]"
 "no|postmortem|Our latency SLO is 200ms and we came in at 340ms yesterday. Draft the incident postmortem."
 "no|sql-group|Write a SQL query that groups orders by region and compares this quarter's revenue to last quarter's"
