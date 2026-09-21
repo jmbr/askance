@@ -228,6 +228,11 @@ After changing the source, reinstall the tool with `uv tool install . --reinstal
 `--force` replaces the executable but reuses a wheel cached against the unchanged version,
 so an agent keeps talking to the old server.
 
+Versions are not set by hand. python-semantic-release reads the commit history on each push
+to `main`: `feat:` is a minor bump, `fix:` a patch one, and everything else releases
+nothing. `CHANGELOG.md`, the tag and `project.version` are generated output. See
+[AGENTS.md](AGENTS.md#releases).
+
 [prek](https://github.com/j178/prek) runs those same nox sessions as git hooks, so the
 hooks and `nox` cannot disagree: formatting and skill validation on every commit, the
 test suite on every push. It also scans staged changes for secrets with

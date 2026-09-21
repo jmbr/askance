@@ -78,5 +78,34 @@ Breaking any of these defeats the point of the project.
   properly instead.
 - ruff with `line-length = 100` decides formatting. Do not hand-format around it.
 - Commit messages are conventional commits, lowercase, describing the change and its
-  reason: `test: compare against the backends and the real transport`.
+  reason: `test: compare against the backends and the real transport`. A `commit-msg` hook
+  rejects anything else, because the version is computed from these subjects.
 - The README is executable documentation here, not decoration. A test reads it.
+
+## Releases
+
+python-semantic-release reads the commit history on every push to `main` and decides
+everything. **The version, the tag and `CHANGELOG.md` are generated; never edit them by
+hand.**
+
+| Subject | Effect |
+|---|---|
+| `feat:` | minor bump |
+| `fix:` | patch bump |
+| `feat!:`, or a `BREAKING CHANGE:` footer | minor bump while below 1.0, not major |
+| `docs:` `test:` `build:` `ci:` `refactor:` `perf:` `style:` `chore:` | no release |
+
+Below 1.0 a breaking change stays minor: going to 2.0 on the first `!` would claim a
+stability askance has not offered. Revisit at 1.0.
+
+Only the subject is constrained. The body is unconstrained and remains the valuable part.
+
+To see what your commits would release, without releasing it:
+
+```bash
+uv run semantic-release --noop version --print
+```
+
+Releases happen on `main` and nowhere else; a branch is refused outright. The release
+commit itself is `chore(release): vX.Y.Z`, which releases nothing, so the workflow it
+triggers stops there.
