@@ -49,8 +49,19 @@ Pi has no built-in MCP support; it needs the [pi-mcp-adapter](https://github.com
 extension (`pi install npm:pi-mcp-adapter`), which reads the same file and prefixes the tool
 names with the server name.
 
-Nothing else is claimed to work. The Copilot cloud agent, Copilot code review, the Copilot
-SDK, and Streamable HTTP deployment are untested here.
+## Optional: the skill
+
+The server gives an agent the tests. The bundled skill teaches it *when* to reach for them,
+so "did the change help?" runs a real test instead of getting an eyeballed answer.
+
+```bash
+ln -s "$PWD/skills/askance" ~/.agents/skills/askance        # Copilot CLI
+ln -s ../../../.agents/skills/askance ~/.pi/agent/skills/   # Pi
+```
+
+It follows the [Agent Skills spec](https://agentskills.io/specification), so
+`skills-ref validate skills/askance` checks it. `tests/skill_trigger_eval.sh` checks the part
+that actually matters: that it fires on real questions and stays quiet on near misses.
 
 ## Tools
 
