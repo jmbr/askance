@@ -40,17 +40,21 @@ jobs:
 
       - name: Install uv
         if: steps.guard.outputs.run == 'true'
-        uses: astral-sh/setup-uv@v5
+        shell: bash
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install the project
         if: steps.guard.outputs.run == 'true'
         run: uv sync --extra dev
 
       # The same sessions the hooks run, so a release cannot ship what a contributor's
-      # machine would have rejected. A failure here means no tag.
+      # machine would have rejected. A failure here means no tag. `uvx` rather than
+      # `uv run`, because nox is a tool this project uses, not a dependency it has.
       - name: Check
         if: steps.guard.outputs.run == 'true'
-        run: uv run nox -s lint skills tests
+        run: uvx nox -s lint skills tests
 
       - name: Release
         if: steps.guard.outputs.run == 'true'
