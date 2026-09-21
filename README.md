@@ -39,8 +39,15 @@ server starts without an activated virtualenv and from any directory.
 | GitHub Copilot CLI | `.mcp.json` in the project, or `~/.copilot/mcp-config.json` |
 | Pi | `.mcp.json` in the project, or `~/.config/mcp/mcp.json` |
 
+Copilot CLI can write the entry for you, which avoids a trust prompt for project files:
+
+```bash
+copilot mcp add askance -- /home/you/.local/bin/askance
+```
+
 Pi has no built-in MCP support; it needs the [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter)
-extension (`pi install npm:pi-mcp-adapter`). Copilot CLI reads the file directly.
+extension (`pi install npm:pi-mcp-adapter`), which reads the same file and prefixes the tool
+names with the server name.
 
 Nothing else is claimed to work. The Copilot cloud agent, Copilot code review, the Copilot
 SDK, and Streamable HTTP deployment are untested here.
@@ -180,8 +187,11 @@ starts it.
 | MCP Python SDK | 2.2.0 |
 | SciPy | 1.18.1 |
 | statsmodels | 0.15.0 |
-| GitHub Copilot CLI | see `docs/COMPATIBILITY.md` |
-| Pi + pi-mcp-adapter | see `docs/COMPATIBILITY.md` |
+| GitHub Copilot CLI | 1.0.84-1 |
+| Pi + pi-mcp-adapter | 0.85.1 + 2.34.0 |
+
+In both clients the same call returns the same p-value as a direct SciPy call, to the last
+digit. See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for what was run and what was not.
 
 ## License
 

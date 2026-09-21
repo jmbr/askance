@@ -7,3 +7,6 @@ build/
 .pytest_cache/
 .ruff_cache/
 .agent-shell/
+
+# Machine-specific absolute path; see README.md
+.mcp.json
