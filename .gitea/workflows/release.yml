@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# This runner's schema supports only the read-all/write-all shorthand. A release must push
+# its commit and tag and create the release, so read-only is insufficient.
+permissions: write-all
+
+# Cancelling a half-finished release leaves a tag without a release, or the reverse, so
+# queue instead.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Without the tags semantic-release cannot see the previous version, and would
+          # compute the next one from the whole history.
+          fetch-depth: 0
+          token: ${{ forgejo.token }}
+
+      # The release commit lands on main and triggers this workflow again. It contains no
+      # releasable change, so without this the workflow answers itself forever.
+      - name: Decide whether to run
+        id: guard
+        shell: bash
+        run: |
+          if [[ "$(git log -1 --pretty=%s)" == "chore(release): "* ]]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install uv
+        if: steps.guard.outputs.run == 'true'
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install the project
+        if: steps.guard.outputs.run == 'true'
+        run: uv sync --extra dev
+
+      # The same sessions the hooks run, so a release cannot ship what a contributor's
+      # machine would have rejected. A failure here means no tag.
+      - name: Check
+        if: steps.guard.outputs.run == 'true'
+        run: uv run nox -s lint skills tests
+
+      - name: Release
+        if: steps.guard.outputs.run == 'true'
+        env:
+          GITEA_SERVER_URL: ${{ forgejo.server_url }}
+          GITEA_TOKEN: ${{ forgejo.token }}
+        run: uv run semantic-release version
