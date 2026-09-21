@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.8"]
+dev = ["pytest>=8.0", "ruff>=0.8", "python-semantic-release>=10.6"]
 
 [project.scripts]
 askance = "askance.server:main"
@@ -37,3 +37,41 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["F", "E", "W", "I", "UP"]
+
+# The only tool that may write a version, a tag or the changelog. Message validation is a
+# separate hook that cannot bump anything (see .pre-commit-config.yaml), so there is no
+# second engine to keep in step.
+[tool.semantic_release]
+commit_parser = "conventional"
+# `project.version` is the single source; the package reads it back through installed
+# metadata, so there is nowhere else for it to drift to.
+version_toml = ["pyproject.toml:project.version"]
+tag_format = "v{version}"
+allow_zero_version = true
+# Below 1.0 a breaking change stays a minor bump. Going to 2.0 on the first `!` would claim
+# a stability askance has not offered yet; revisit at 1.0.
+major_on_zero = false
+# Nothing is published: a release is a tag, a changelog entry and a Forgejo release, and
+# installation stays `uv tool install git+<url>@vX.Y.Z`.
+build_command = ""
+upload_to_vcs_release = false
+# The release commit has to pass our own commit-msg hook, and `chore` releases nothing, so
+# it cannot trigger a second release.
+commit_message = "chore(release): v{version}"
+commit_author = "askance release bot <askance@localhost>"
+
+[tool.semantic_release.branches.main]
+match = "main"
+
+[tool.semantic_release.remote]
+# The runner reaches the API through its internal service name, while generated links use
+# the public URL. This instance deliberately speaks HTTP.
+type = "gitea"
+domain = "http://localhost:3000"
+api_domain = { env = "GITEA_SERVER_URL" }
+token = { env = "GITEA_TOKEN" }
+insecure = true
+
+[tool.semantic_release.changelog]
+# Types that change nothing a user of the package can observe.
+exclude_commit_patterns = ["^chore(\\(.*\\))?: ", "^ci(\\(.*\\))?: ", "^style(\\(.*\\))?: "]
