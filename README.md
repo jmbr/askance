@@ -180,15 +180,39 @@ regression and model diagnostics, and survival analysis. Open an issue if you ne
 
 ## Development
 
+`nox` runs the whole thing on every supported Python:
+
+```bash
+uvx nox              # tests on 3.12 and 3.13, then lint and skill validation
+uvx nox -s tests     # just the tests
+uvx nox -s lint      # ruff check and ruff format --check
+uvx nox -s format    # the same, fixing what ruff can fix
+uvx nox -s skills    # validate skills/ with skills-ref
+uvx nox -s tests -- -k binomial   # arguments after -- go to pytest
+```
+
+Or work in the checkout directly:
+
 ```bash
 uv sync --extra dev
 uv run pytest
 uv run ruff check
 ```
 
+[prek](https://github.com/j178/prek) runs those same nox sessions as git hooks, so the
+hooks and `nox` cannot disagree: formatting and skill validation on every commit, the
+test suite on every push. It also scans staged changes for secrets with
+[betterleaks](https://github.com/betterleaks/betterleaks).
+
+```bash
+prek install          # once per clone
+prek run --all-files  # check everything now
+```
+
 The suite compares every test against a direct SciPy or statsmodels call, and starts the
 installed executable from an unrelated directory with no virtualenv, which is how an agent
-starts it.
+starts it. Under nox that executable comes from a freshly built wheel, so a packaging
+mistake fails the suite.
 
 ## Tested against
 

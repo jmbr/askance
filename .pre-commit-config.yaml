@@ -1,0 +1,61 @@
+# Hooks run with prek: `prek install` once, then automatically on commit and push.
+# `prek run --all-files` checks everything, `prek autoupdate` bumps the revs below.
+#
+# Every check that has a nox session is run through nox, so a hook and `nox` cannot
+# disagree. -R reuses the session virtualenv and skips reinstalling it; nox still
+# builds it the first time.
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  # Blocks secrets from reaching a commit. Not a nox session: it is a Go binary, and
+  # prek builds it itself.
+  - repo: https://github.com/betterleaks/betterleaks
+    rev: v1.8.1
+    hooks:
+      - id: betterleaks
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-toml
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: debug-statements
+
+  # Keeps uv.lock in step with pyproject.toml.
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.9.30
+    hooks:
+      - id: uv-lock
+
+  # Local tools rather than pinned repos.
+  - repo: local
+    hooks:
+      # What `nox -s lint` checks, fixing whatever ruff can fix.
+      - id: nox-format
+        name: nox -s format
+        entry: uvx nox -R -s format
+        language: system
+        types_or: [python, pyi, toml]
+        pass_filenames: false
+
+      - id: nox-skills
+        name: nox -s skills
+        entry: uvx nox -R -s skills
+        language: system
+        files: ^skills/
+        pass_filenames: false
+
+      # Too slow for every commit, cheap enough before a push. Always runs: a test
+      # reads README.md, so even a docs-only change can break the suite. -r rather
+      # than -R, so the suite tests a freshly built wheel.
+      - id: nox-tests
+        name: nox -s tests
+        entry: uvx nox -r -s tests
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]

@@ -278,9 +278,9 @@ async def test_an_invalid_call_explains_itself_to_the_caller() -> None:
 @pytest.mark.anyio
 async def test_the_installed_command_serves_from_a_stripped_environment() -> None:
     """How an agent actually starts it: no activated virtualenv, unrelated directory."""
-    command = ROOT / ".venv" / "bin" / "askance"
+    command = Path(sys.executable).parent / "askance"
     if not command.exists():  # pragma: no cover - depends on the local install
-        pytest.skip("askance is not installed in .venv")
+        pytest.skip("askance is not installed in this environment")
     server = StdioServerParameters(
         command=str(command),
         args=[],

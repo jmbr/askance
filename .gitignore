@@ -6,6 +6,7 @@ build/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.nox/
 .agent-shell/
 
 # Machine-specific absolute path; see README.md
