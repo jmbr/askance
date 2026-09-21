@@ -4,7 +4,7 @@
 # Every check that has a nox session is run through nox, so a hook and `nox` cannot
 # disagree. -R reuses the session virtualenv and skips reinstalling it; nox still
 # builds it the first time.
-default_install_hook_types: [pre-commit, pre-push]
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
 
 repos:
   # Blocks secrets from reaching a commit. Not a nox session: it is a Go binary, and
@@ -13,6 +13,23 @@ repos:
     rev: v1.8.1
     hooks:
       - id: betterleaks
+
+  # Subjects must say what kind of change they are, because python-semantic-release
+  # reads them to decide the next version. A malformed subject does not fail loudly;
+  # it quietly drops the change from the bump and the changelog.
+  #
+  # A linter rather than commitizen, which is a version bumper that happens to include
+  # one. Only semantic-release may write a version, and a tool that cannot write one
+  # makes that a property of the toolchain rather than a rule to police.
+  #
+  # Default arguments on purpose: the default type list is already what AGENTS.md
+  # documents, and --strict would reject merge commits, which is a trap to leave for
+  # whoever first opens a pull request.
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
