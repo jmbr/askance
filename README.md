@@ -54,9 +54,20 @@ The server exposes statistical operations. The skill in this repository teaches 
 to use them, so a question such as "did the change help?" calls Askance instead of relying on
 visual inspection.
 
-The installed package does not include the skill. Run these commands from a clone
-(`git clone https://git.superadditive.com/jmbr/askance`), and keep the clone: the links point
-into it.
+The installed package does not include the skill. Install it with
+[`npx skills`](https://github.com/vercel-labs/skills), which needs Node.js:
+
+```bash
+npx skills add https://git.superadditive.com/jmbr/askance.git -g -y -a github-copilot -a pi
+```
+
+Keep the `.git` suffix: without it, the installer looks for a skills index on the web server
+and finds none. This copies the skill into `~/.agents/skills/askance`, links Pi's skill
+directory to it, and `npx skills update` refreshes it later.
+
+To follow a clone instead, so that `git pull` updates the skill, run these commands from the
+clone (`git clone https://git.superadditive.com/jmbr/askance`) and keep it in place: the links
+point into it.
 
 ```bash
 mkdir -p ~/.agents/skills ~/.pi/agent/skills
