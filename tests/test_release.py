@@ -77,8 +77,13 @@ def test_releases_push_through_the_checkouts_authenticated_remote() -> None:
 
 def test_a_release_publishes_nothing() -> None:
     """Releases create a tag, changelog entry, and Forgejo release, but no artifacts."""
-    assert config()["build_command"] == ""
+    assert "uv build" not in config()["build_command"]
     assert config()["upload_to_vcs_release"] is False
+
+
+def test_the_release_commit_keeps_the_lockfile_in_step() -> None:
+    """The lockfile records the project's version; a stale one fails the uv-lock hook."""
+    assert config()["build_command"] == "uv lock && git add uv.lock"
 
 
 def test_below_one_point_zero_a_breaking_change_stays_minor() -> None:

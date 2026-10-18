@@ -47,8 +47,9 @@ tag_format = "v{version}"
 allow_zero_version = true
 # Below 1.0, a breaking change produces a minor bump. Revisit at 1.0.
 major_on_zero = false
-# Releases create no package artifacts.
-build_command = ""
+# Releases create no package artifacts. The build step only refreshes uv.lock, which records
+# the project's version, and stages it into the release commit.
+build_command = "uv lock && git add uv.lock"
 upload_to_vcs_release = false
 # `chore` passes the commit hook but does not trigger another release.
 commit_message = "chore(release): v{version}"
