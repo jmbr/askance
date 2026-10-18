@@ -70,11 +70,17 @@ effect size, pass those quantities directly:
 | "we care about a 20ms improvement, spread is about 40ms" | `design: independent_t`, `difference: 20`, `std_dev: 40` |
 
 Designs: `one_sample_t`, `paired_t`, `independent_t`, `two_proportions`,
-`one_way_anova` and `chi_square` (the last two need `groups`).
+`one_way_anova` (needs `groups`) and `chi_square` (needs the table's `rows`
+and `columns`).
 
 Read `n_is` in the result before quoting the number. For the two-group designs
-it counts **one group**, so the study needs roughly twice that in total.
-Sample sizes are rounded up, because rounding down under-powers the study.
+`n` counts the **first group** and `n_second_group` the second; add them for
+the total. Sample sizes are rounded up, because rounding down under-powers the
+study.
+
+`two_proportions` sizes the 2x2 chi-square test without Yates' correction. With
+the default correction, or with `fisher_exact`, the same n gives less power;
+say so when reporting the plan.
 
 For example, detecting a change from 10% to 12% conversion needs about 3,800
 observations per arm. Report the required sample size directly.
@@ -108,8 +114,9 @@ Give the p-value, the decision, and the test used. Include these qualifications:
   after seeing its result introduces selection bias. Choose the test in step 2,
   before inspecting the result.
 - **Unsupported analyses:** Askance has no equivalence tests (TOST), does not
-  report effect sizes for test results, and has no power solver for rank-based
-  tests or correlations. Do not approximate these analyses.
+  report effect sizes for test results, and has no power solver for
+  `binomial_exact`, rank-based tests, correlations, or one-sided tests. Do not
+  approximate these analyses.
 - **Counts are integers**, not percentages or rates.
 
 ## Worked example

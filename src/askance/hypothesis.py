@@ -7,7 +7,10 @@ the calculations; this module validates inputs and normalizes their results for 
 from __future__ import annotations
 
 import math
+import threading
 import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
 from importlib.metadata import version
 from typing import Any
 
@@ -28,22 +31,35 @@ ALTERNATIVES = ("two-sided", "less", "greater")
 
 # These keys are passed directly to statsmodels.stats.multitest.multipletests.
 CORRECTION_METHODS = {
-    "bonferroni": "Single-step Bonferroni; controls the family-wise error rate.",
-    "sidak": "Single-step Sidak; controls the family-wise error rate.",
-    "holm": "Step-down Holm-Bonferroni; controls the family-wise error rate.",
-    "holm-sidak": "Step-down Holm-Sidak; controls the family-wise error rate.",
-    "fdr_bh": "Benjamini-Hochberg; controls the false discovery rate.",
-    "fdr_by": "Benjamini-Yekutieli; controls the false discovery rate under dependence.",
+    "bonferroni": (
+        "Single-step Bonferroni; controls the family-wise error rate under any dependence."
+    ),
+    "sidak": (
+        "Single-step Sidak; controls the family-wise error rate for independent or positively "
+        "dependent tests."
+    ),
+    "holm": "Step-down Holm-Bonferroni; controls the family-wise error rate under any dependence.",
+    "holm-sidak": (
+        "Step-down Holm-Sidak; controls the family-wise error rate for independent or "
+        "positively dependent tests."
+    ),
+    "fdr_bh": (
+        "Benjamini-Hochberg; controls the false discovery rate for independent or positively "
+        "dependent tests."
+    ),
+    "fdr_by": "Benjamini-Yekutieli; controls the false discovery rate under any dependence.",
 }
 
 # statsmodels uses `n` differently across solvers. `n_is` tells callers whether the result
-# counts all observations, one group, or matched pairs.
+# counts all observations, one group, or matched pairs. `alternative` is passed to the solvers
+# that accept one, so the result can say which test was sized.
 POWER_DESIGNS: dict[str, dict[str, Any]] = {
     "one_sample_t": {
         "solver": TTestPower,
         "backend": "statsmodels.stats.power.TTestPower",
         "effect": "Cohen's d",
         "n_is": "total observations",
+        "alternative": "two-sided",
         "pairs_with": "one_sample_t",
     },
     "paired_t": {
@@ -51,6 +67,7 @@ POWER_DESIGNS: dict[str, dict[str, Any]] = {
         "backend": "statsmodels.stats.power.TTestPower",
         "effect": "Cohen's d, on the paired differences",
         "n_is": "number of pairs",
+        "alternative": "two-sided",
         "pairs_with": "paired_t",
     },
     "independent_t": {
@@ -59,6 +76,7 @@ POWER_DESIGNS: dict[str, dict[str, Any]] = {
         "effect": "Cohen's d",
         "n_is": "observations in the first group",
         "accepts_ratio": True,
+        "alternative": "two-sided",
         "pairs_with": "independent_t",
     },
     "two_proportions": {
@@ -68,7 +86,10 @@ POWER_DESIGNS: dict[str, dict[str, Any]] = {
         "n_is": "observations in the first group",
         "accepts_ratio": True,
         "accepts_proportions": True,
-        "pairs_with": "chi_square_independence, binomial_exact",
+        "alternative": "two-sided",
+        # This sizes the uncorrected two-sample comparison. Yates' correction and Fisher's test
+        # are more conservative, so the same n gives them less power.
+        "pairs_with": "chi_square_independence on a 2x2 table, with correction disabled",
     },
     "one_way_anova": {
         "solver": FTestAnovaPower,
@@ -83,9 +104,8 @@ POWER_DESIGNS: dict[str, dict[str, Any]] = {
         "solver": GofChisquarePower,
         "backend": "statsmodels.stats.power.GofChisquarePower",
         "effect": "Cohen's w",
-        "n_is": "total observations",
-        "groups_arg": "n_bins",
-        "groups_label": "number of categories",
+        "n_is": "total observations in the table",
+        "table_shape": True,
         "pairs_with": "chi_square_independence",
     },
 }
@@ -158,6 +178,8 @@ TESTS: dict[str, dict[str, Any]] = {
         "assumptions": [
             "Observations are correctly paired and of equal length.",
             "The differences are symmetrically distributed.",
+            "Pairs with a zero difference are discarded before ranking (SciPy's default "
+            "zero_method='wilcox').",
         ],
     },
     "one_way_anova": {
@@ -182,6 +204,8 @@ TESTS: dict[str, dict[str, Any]] = {
             "The samples are independent.",
             "Reading the result as a difference in medians additionally requires similarly "
             "shaped distributions.",
+            "The p-value uses a chi-square approximation; SciPy suggests at least 5 "
+            "observations per group.",
         ],
     },
     "pearson_correlation": {
@@ -195,6 +219,7 @@ TESTS: dict[str, dict[str, Any]] = {
         "assumptions": [
             "Pairs are independent and of equal length.",
             "The relationship is linear; the statistic is sensitive to outliers.",
+            "The p-value assumes both variables are normally distributed.",
         ],
     },
     "spearman_correlation": {
@@ -208,6 +233,8 @@ TESTS: dict[str, dict[str, Any]] = {
         "assumptions": [
             "Pairs are independent and of equal length.",
             "The variables are at least ordinal.",
+            "SciPy documents the p-value as accurate only for large samples, more than about "
+            "500 pairs.",
         ],
     },
     "chi_square_independence": {
@@ -244,6 +271,9 @@ TESTS: dict[str, dict[str, Any]] = {
         "assumptions": [
             "Independent trials with a constant success probability.",
             "The calculation is exact; it does not use a large-sample approximation.",
+            "The confidence interval is SciPy's 'exact' (Clopper-Pearson) interval. It inverts "
+            "the equal-tailed test, not the two-sided p-value, so near alpha the interval and "
+            "the decision can disagree.",
         ],
     },
 }
@@ -263,7 +293,10 @@ class AskanceError(ToolError, ValueError):
 def _finite(value: Any, what: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise AskanceError(f"{what} must be a number, got {value!r}")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        raise AskanceError(f"{what} is too large to represent as a floating-point number") from None
     if not math.isfinite(number):
         raise AskanceError(f"{what} must be finite, got {value!r}; remove or impute it first")
     return number
@@ -293,7 +326,7 @@ def _alternative(value: Any, spec: dict[str, Any], test: str) -> str:
 
 
 def _spec(test: Any, tool: str) -> dict[str, Any]:
-    if test not in TESTS:
+    if not isinstance(test, str) or test not in TESTS:
         raise AskanceError(f"unknown test {test!r}; call list_tests for the supported ids")
     spec = TESTS[test]
     if spec["tool"] != tool:
@@ -344,8 +377,22 @@ def _table(values: Any, spec: dict[str, Any], test: str) -> list[list[int]]:
         raise AskanceError(f"table rows must have equal length, got {[len(r) for r in rows]}")
     if spec["table"] == "2 x 2" and (len(rows) != 2 or len(rows[0]) != 2):
         raise AskanceError(f"{test} needs a 2x2 table, got {len(rows)}x{len(rows[0])}")
+    if len(rows) < 2 or len(rows[0]) < 2:
+        raise AskanceError(
+            f"{test} needs at least 2 rows and 2 columns to test an association, got "
+            f"{len(rows)}x{len(rows[0])}"
+        )
     if sum(sum(r) for r in rows) == 0:
         raise AskanceError("table is all zeros")
+    # An empty row or column leaves a smaller table, whose test the backends report as p = 1
+    # or refuse. Dropping it would change the degrees of freedom, so the caller must decide.
+    for axis, lines in (("row", rows), ("column", list(zip(*rows)))):
+        for i, line in enumerate(lines):
+            if sum(line) == 0:
+                raise AskanceError(
+                    f"table {axis} {i} has no observations; every row and column of a test of "
+                    "association needs at least one count"
+                )
     return rows
 
 
@@ -369,17 +416,25 @@ def _result(
     method: dict[str, Any],
     sample_sizes: list[int],
     captured: list[warnings.WarningMessage],
+    notes: tuple[str, ...] = (),
     **extra: Any,
 ) -> dict[str, Any]:
-    notes = [f"{w.category.__name__}: {w.message}" for w in captured]
+    messages = [f"{w.category.__name__}: {w.message}" for w in captured]
+    messages.extend(notes)
+    raw_statistic = statistic
     statistic, p_value = _number(statistic), _number(p_value)
     if p_value is None:
-        notes.append(
+        messages.append(
             "The backend returned an undefined p-value, usually from constant or degenerate "
             "input. No decision can be made."
         )
         decision = None
     else:
+        if statistic is None and raw_statistic is not None:
+            messages.append(
+                f"The backend returned a statistic of {float(raw_statistic)}, which JSON cannot "
+                "represent, so it is reported as null."
+            )
         decision = "reject_null" if p_value < alpha else "fail_to_reject"
     result = {
         "test": test,
@@ -391,17 +446,37 @@ def _result(
         "sample_sizes": sample_sizes,
         "method": method,
         "versions": {"askance": version("askance"), "scipy": scipy.__version__},
-        "warnings": notes,
+        "warnings": messages,
     }
     if alternative is not None:
         result["alternative"] = alternative
-    for key, value in extra.items():
-        if value is not None:
-            result[key] = value
+    result.update(extra)
     return result
 
 
 # -- dispatch --------------------------------------------------------------
+
+# `warnings.catch_warnings` swaps process-wide state, and the MCP SDK runs each sync tool on a
+# worker thread. Unserialized, overlapping calls record each other's warnings and restore each
+# other's filters out of order, leaving the process modified after both return.
+_BACKEND_LOCK = threading.Lock()
+
+
+@contextmanager
+def _backend(function: str) -> Iterator[list[warnings.WarningMessage]]:
+    """Capture a backend call's warnings, and pass its input errors on to the caller.
+
+    The MCP SDK reports only `ToolError` messages; any other exception reaches the caller as
+    "Error executing tool", without the reason.
+    """
+    with _BACKEND_LOCK, warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        try:
+            yield captured
+        except AskanceError:
+            raise
+        except ValueError as exc:
+            raise AskanceError(f"{function} rejected the input: {exc}") from exc
 
 
 def run_samples_test(
@@ -428,64 +503,56 @@ def run_samples_test(
     if equal_var and not spec.get("accepts_equal_var"):
         raise AskanceError(f"{test} does not use `equal_var`")
 
+    if test == "wilcoxon_signed_rank" and data[0] == data[1]:
+        raise AskanceError(
+            f"every paired difference is zero; {test} discards zero differences, which leaves "
+            "nothing to rank"
+        )
+
     options: dict[str, Any] = {}
     extra: dict[str, Any] = {}
     directional = {"alternative": alternative} if spec.get("directional") else {}
 
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
+    with _backend(spec["backend"]) as captured:
         if test == "one_sample_t":
             out = stats.ttest_1samp(data[0], popmean=reference, **directional)
-            statistic, p_value, df = out.statistic, out.pvalue, out.df
             options = {"popmean": reference, **directional}
         elif test == "independent_t":
             out = stats.ttest_ind(data[0], data[1], equal_var=equal_var, **directional)
-            statistic, p_value, df = out.statistic, out.pvalue, out.df
             options = {"equal_var": equal_var, **directional}
         elif test == "paired_t":
             out = stats.ttest_rel(data[0], data[1], **directional)
-            statistic, p_value, df = out.statistic, out.pvalue, out.df
             options = dict(directional)
         elif test == "mann_whitney_u":
             out = stats.mannwhitneyu(data[0], data[1], **directional)
-            statistic, p_value, df = out.statistic, out.pvalue, None
             options = dict(directional)
         elif test == "wilcoxon_signed_rank":
             out = stats.wilcoxon(data[0], data[1], **directional)
-            statistic, p_value, df = out.statistic, out.pvalue, None
             options = dict(directional)
         elif test == "one_way_anova":
             out = stats.f_oneway(*data)
-            statistic, p_value, df = out.statistic, out.pvalue, None
-            groups = len(data)
-            observations = sum(len(s) for s in data)
-            extra["degrees_of_freedom"] = {
-                "between_groups": groups - 1,
-                "within_groups": observations - groups,
-            }
         elif test == "kruskal_wallis":
             out = stats.kruskal(*data)
-            statistic, p_value, df = out.statistic, out.pvalue, len(data) - 1
         elif test == "pearson_correlation":
             out = stats.pearsonr(data[0], data[1], **directional)
-            statistic, p_value, df = out.statistic, out.pvalue, len(data[0]) - 2
             extra["correlation"] = _number(out.statistic)
             options = dict(directional)
         elif test == "spearman_correlation":
             out = stats.spearmanr(data[0], data[1], **directional)
-            statistic, p_value, df = out.statistic, out.pvalue, None
             extra["correlation"] = _number(out.statistic)
             options = dict(directional)
         else:  # pragma: no cover - guarded by _spec
             raise AskanceError(f"{test} has no sample-based implementation")
 
-    if df is not None and "degrees_of_freedom" not in extra:
-        extra["degrees_of_freedom"] = _number(df)
+    # Only the t-tests' results carry degrees of freedom; reporting any other would mean
+    # computing it here.
+    if hasattr(out, "df"):
+        extra["degrees_of_freedom"] = _number(out.df)
 
     return _result(
         test,
-        statistic,
-        p_value,
+        out.statistic,
+        out.pvalue,
         alpha,
         alternative if spec.get("directional") else None,
         {"function": spec["backend"], "options": options},
@@ -509,24 +576,21 @@ def run_contingency_test(
     alpha = _alpha(alpha)
 
     extra: dict[str, Any] = {}
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
+    with _backend(spec["backend"]) as captured:
         if test == "chi_square_independence":
             out = stats.chi2_contingency(counts, correction=correction)
-            statistic, p_value = out.statistic, out.pvalue
             extra["degrees_of_freedom"] = int(out.dof)
             extra["expected_frequencies"] = [[_number(c) for c in row] for row in out.expected_freq]
             options = {"correction": correction and len(counts) == 2 == len(counts[0])}
         else:
             out = stats.fisher_exact(counts, alternative=alternative)
-            statistic, p_value = out.statistic, out.pvalue
             extra["odds_ratio"] = _number(out.statistic)
             options = {"alternative": alternative}
 
     return _result(
         test,
-        statistic,
-        p_value,
+        out.statistic,
+        out.pvalue,
         alpha,
         alternative if spec.get("directional") else None,
         {"function": spec["backend"], "options": options},
@@ -559,10 +623,18 @@ def run_binomial_test(
     if not 0.0 <= probability <= 1.0:
         raise AskanceError(f"probability must be between 0 and 1, got {probability}")
 
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
+    with _backend(spec["backend"]) as captured:
         out = stats.binomtest(successes, trials, probability, alternative=alternative)
-        interval = out.proportion_ci(confidence_level=1 - alpha)
+        interval = out.proportion_ci(confidence_level=1 - alpha, method="exact")
+
+    notes: tuple[str, ...] = ()
+    if (out.pvalue < alpha) == (interval.low <= probability <= interval.high):
+        notes = (
+            "The decision and the confidence interval disagree about `probability`. SciPy's "
+            "two-sided p-value sums every outcome no more likely than the one observed, while "
+            "the Clopper-Pearson interval inverts the equal-tailed test; near alpha they can "
+            "differ.",
+        )
 
     return _result(
         "binomial_exact",
@@ -576,19 +648,21 @@ def run_binomial_test(
         },
         [trials],
         captured,
+        notes,
         successes=successes,
         proportion=_number(out.statistic),
         proportion_confidence_interval={
             "low": _number(interval.low),
             "high": _number(interval.high),
             "confidence_level": 1 - alpha,
+            "method": "exact",
         },
     )
 
 
 def adjust_p_values(p_values: Any, method: str, alpha: float = 0.05) -> dict[str, Any]:
     """Correct a family of p-values for multiple testing."""
-    if method not in CORRECTION_METHODS:
+    if not isinstance(method, str) or method not in CORRECTION_METHODS:
         raise AskanceError(
             f"unknown method {method!r}; supported methods are {list(CORRECTION_METHODS)}"
         )
@@ -602,8 +676,7 @@ def adjust_p_values(p_values: Any, method: str, alpha: float = 0.05) -> dict[str
         values.append(number)
     alpha = _alpha(alpha)
 
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
+    with _backend("statsmodels.stats.multitest.multipletests") as captured:
         reject, adjusted, alpha_sidak, alpha_bonferroni = multipletests(
             values, alpha=alpha, method=method
         )
@@ -683,6 +756,12 @@ def _effect_size(
     return abs(_positive(effect_size, "effect_size")), {"from": "given"}
 
 
+def _at_least_two(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 2:
+        raise AskanceError(f"{name} must be an integer of at least 2, got {value!r}")
+    return value
+
+
 def analyze_power(
     design: str,
     effect_size: Any = None,
@@ -694,9 +773,11 @@ def analyze_power(
     proportions: Any = None,
     difference: Any = None,
     std_dev: Any = None,
+    rows: Any = None,
+    columns: Any = None,
 ) -> dict[str, Any]:
     """Solve for whichever one of effect size, sample size, alpha or power is left out."""
-    if design not in POWER_DESIGNS:
+    if not isinstance(design, str) or design not in POWER_DESIGNS:
         raise AskanceError(
             f"unknown design {design!r}; supported designs are {list(POWER_DESIGNS)}"
         )
@@ -728,6 +809,11 @@ def analyze_power(
         power = _finite(power, "power")
         if not 0.0 < power < 1.0:
             raise AskanceError(f"power must be between 0 and 1 exclusive, got {power}")
+    if alpha is not None and power is not None and power <= alpha:
+        raise AskanceError(
+            f"power ({power}) must exceed alpha ({alpha}): with no effect at all, a test "
+            "already rejects with probability alpha"
+        )
 
     arguments: dict[str, Any] = {"effect_size": size, "alpha": alpha, "power": power}
     arguments["nobs1" if spec.get("accepts_ratio") else "nobs"] = n
@@ -740,27 +826,44 @@ def analyze_power(
     if "groups_arg" in spec:
         if groups is None:
             raise AskanceError(f"{design} needs `groups`: the {spec['groups_label']}")
-        if isinstance(groups, bool) or not isinstance(groups, int) or groups < 2:
-            raise AskanceError(f"groups must be an integer of at least 2, got {groups!r}")
-        arguments[spec["groups_arg"]] = groups
+        arguments[spec["groups_arg"]] = _at_least_two(groups, "groups")
+        if n is not None and n <= groups:
+            raise AskanceError(
+                f"n must be greater than groups for {design}, got n={n} and groups={groups}; "
+                "the within-group degrees of freedom are n - groups"
+            )
     elif groups is not None:
-        raise AskanceError(f"{design} does not use `groups`")
+        hint = "; give the table's `rows` and `columns` instead" if spec.get("table_shape") else ""
+        raise AskanceError(f"{design} does not use `groups`{hint}")
 
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
+    if spec.get("table_shape"):
+        if rows is None or columns is None:
+            raise AskanceError(
+                f"{design} needs `rows` and `columns`: the shape of the contingency table"
+            )
+        rows, columns = _at_least_two(rows, "rows"), _at_least_two(columns, "columns")
+        # GofChisquarePower tests n_bins - 1 degrees of freedom, while a test of independence on
+        # an r x c table has (r - 1)(c - 1).
+        arguments["n_bins"] = (rows - 1) * (columns - 1) + 1
+    elif rows is not None or columns is not None:
+        raise AskanceError(f"{design} does not use `rows` or `columns`")
+
+    if "alternative" in spec:
+        arguments["alternative"] = spec["alternative"]
+
+    with _backend(spec["backend"]) as captured:
         try:
             answer = float(spec["solver"]().solve_power(**arguments))
         except Exception as exc:
             raise AskanceError(
-                f"the solver could not find a {solved_for} for this combination: {exc}. "
-                "Small effects may require very large samples, and some combinations have no "
-                "solution at all."
+                f"statsmodels could not solve for {solved_for} with these inputs: {exc}"
             ) from exc
 
     if not math.isfinite(answer):
         raise AskanceError(
-            f"the solver returned no usable {solved_for} for this combination; an effect this "
-            "small may need an impractical sample size"
+            f"statsmodels could not solve for {solved_for} with these inputs; it returned "
+            f"{answer}. A very large effect can exceed the requested power even at the "
+            "smallest sample, and a very small one can need an impractically large sample."
         )
 
     resolved = {"effect_size": size, "n": n, "alpha": alpha, "power": power}
@@ -772,20 +875,32 @@ def analyze_power(
         "effect_size": _number(resolved["effect_size"]),
         "effect_size_metric": spec["effect"],
         "effect_size_source": effect_source,
-        "n": math.ceil(resolved["n"]) if solved_for == "n" else _number(resolved["n"]),
+        "n": _number(n),
         "n_is": spec["n_is"],
         "alpha": _number(resolved["alpha"]),
         "power": _number(resolved["power"]),
-        "method": {"class": spec["backend"], "options": {"ratio": arguments.get("ratio")}},
+        "method": {
+            "class": spec["backend"],
+            "options": {
+                key: arguments[key]
+                for key in ("ratio", "alternative", "k_groups", "n_bins")
+                if key in arguments
+            },
+        },
         "versions": {"askance": version("askance"), "statsmodels": version("statsmodels")},
         "warnings": [f"{w.category.__name__}: {w.message}" for w in captured],
     }
-    if "groups_arg" in spec:
-        result["method"]["options"][spec["groups_arg"]] = groups
     if solved_for == "n":
+        # Rounding down would leave the study short of the requested power. A one-way ANOVA
+        # total is rounded to a multiple of groups, so that the groups can be equal.
+        step = groups if "groups_arg" in spec else 1
+        result["n"] = step * math.ceil(answer / step)
         result["n_exact"] = _number(answer)
-    if result["method"]["options"].get("ratio") is None:
-        result["method"]["options"].pop("ratio", None)
+    if spec.get("accepts_ratio"):
+        second = arguments["ratio"] * resolved["n"]
+        result["n_second_group"] = math.ceil(second) if solved_for == "n" else _number(second)
+    if spec.get("table_shape"):
+        result["rows"], result["columns"] = rows, columns
     return result
 
 
@@ -832,6 +947,7 @@ def list_tests() -> dict[str, Any]:
             "that the null hypothesis is true.",
             "Missing and non-finite values are rejected; clean the data before calling.",
             "Use power designs before collecting data and hypothesis tests afterward.",
+            "Power designs for the t-tests and two_proportions size a two-sided test.",
         ],
         "versions": {
             "askance": version("askance"),

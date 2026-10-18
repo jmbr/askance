@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import Field, StrictBool, StrictFloat, StrictInt
 
 from askance import hypothesis as H
 
@@ -24,7 +24,9 @@ Method = Literal[tuple(H.CORRECTION_METHODS)]  # type: ignore[valid-type]
 Design = Literal[tuple(H.POWER_DESIGNS)]  # type: ignore[valid-type]
 Alternative = Literal[H.ALTERNATIVES]  # type: ignore[valid-type]
 
-Alpha = Annotated[float, Field(gt=0, lt=1, description="Significance level.")]
+# Strict types throughout: in lax mode pydantic turns true into 1, "7" into 7 and 8.0 into 8
+# before askance.hypothesis can refuse them.
+Alpha = Annotated[StrictFloat, Field(gt=0, lt=1, description="Significance level.")]
 
 mcp = MCPServer(
     name="askance",
@@ -43,9 +45,9 @@ mcp = MCPServer(
 @mcp.tool(
     annotations=READ_ONLY,
     description=(
-        "List every hypothesis test and p-value correction this server supports, with the "
-        "question each one answers, its null hypothesis, the input it needs, and its "
-        "assumptions. Call this before running a test."
+        "List every hypothesis test, p-value correction, and power design this server "
+        "supports, with the question each one answers, its null hypothesis, the input it "
+        "needs, and its assumptions. Call this before running a test or planning a study."
     ),
 )
 def list_tests() -> dict[str, Any]:
@@ -64,15 +66,15 @@ def list_tests() -> dict[str, Any]:
 def test_samples(
     test: SampleTest,
     samples: Annotated[
-        list[list[float]],
+        list[list[StrictFloat]],
         Field(description="One list of raw observations per group, e.g. [[1.2, 3.4], [2.2, 5.1]]."),
     ],
     reference: Annotated[
-        float | None, Field(description="The value to compare against; one_sample_t only.")
+        StrictFloat | None, Field(description="The value to compare against; one_sample_t only.")
     ] = None,
     alternative: Alternative = "two-sided",
     equal_var: Annotated[
-        bool,
+        StrictBool,
         Field(description="independent_t only: pool the variances (Student) instead of Welch."),
     ] = False,
     alpha: Alpha = 0.05,
@@ -90,12 +92,12 @@ def test_samples(
 def test_contingency(
     test: ContingencyTest,
     table: Annotated[
-        list[list[int]],
+        list[list[StrictInt]],
         Field(description="Rows of non-negative integer counts, e.g. [[8, 2], [1, 5]]."),
     ],
     alternative: Alternative = "two-sided",
     correction: Annotated[
-        bool,
+        StrictBool,
         Field(description="chi_square_independence: apply Yates' correction to a 2x2 table."),
     ] = True,
     alpha: Alpha = 0.05,
@@ -111,10 +113,10 @@ def test_contingency(
     ),
 )
 def test_binomial(
-    successes: Annotated[int, Field(ge=0, description="Number of successes observed.")],
-    trials: Annotated[int, Field(gt=0, description="Number of independent trials.")],
+    successes: Annotated[StrictInt, Field(ge=0, description="Number of successes observed.")],
+    trials: Annotated[StrictInt, Field(gt=0, description="Number of independent trials.")],
     probability: Annotated[
-        float, Field(ge=0, le=1, description="Success probability under the null hypothesis.")
+        StrictFloat, Field(ge=0, le=1, description="Success probability under the null hypothesis.")
     ] = 0.5,
     alternative: Alternative = "two-sided",
     alpha: Alpha = 0.05,
@@ -134,7 +136,7 @@ def test_binomial(
 )
 def adjust_p_values(
     p_values: Annotated[
-        list[float], Field(description="The uncorrected p-values of one family of tests.")
+        list[StrictFloat], Field(description="The uncorrected p-values of one family of tests.")
     ],
     method: Method,
     alpha: Alpha = 0.05,
@@ -148,47 +150,78 @@ def adjust_p_values(
         "Plan sample size or statistical power before collecting data. Leave one of effect "
         "size, n, alpha, or power unspecified; Askance solves for it. For two_proportions, "
         "you may pass two rates instead of Cohen's h. For t-test designs, you may pass a "
-        "difference and expected standard deviation instead of Cohen's d. This tool does "
-        "not test observed data."
+        "difference and expected standard deviation instead of Cohen's d. one_way_anova "
+        "needs groups; chi_square needs the table's rows and columns. Read n_is in the "
+        "result: for two-group designs, n counts the first group and n_second_group the "
+        "second. This tool does not test observed data."
     ),
 )
 def analyze_power(
     design: Design,
     effect_size: Annotated[
-        float | None,
+        StrictFloat | None,
         Field(description="Standardized effect (Cohen's d, h, f or w). Omit to solve for it."),
     ] = None,
     n: Annotated[
-        float | None,
+        StrictFloat | None,
         Field(description="Sample size; see n_is in the result for what it counts."),
     ] = None,
     alpha: Annotated[
-        float | None, Field(description="Significance level. Omit to solve for it.")
+        StrictFloat | None, Field(description="Significance level. Omit to solve for it.")
     ] = 0.05,
     power: Annotated[
-        float | None,
+        StrictFloat | None,
         Field(description="Probability of detecting the effect; 0.8 is a common target."),
     ] = None,
     ratio: Annotated[
-        float, Field(description="Second group size divided by the first; two-group designs.")
+        StrictFloat,
+        Field(description="Second group size divided by the first; two-group designs."),
     ] = 1.0,
     groups: Annotated[
-        int | None,
-        Field(description="Groups (one_way_anova) or categories (chi_square)."),
+        StrictInt | None, Field(description="one_way_anova: the number of groups.")
+    ] = None,
+    rows: Annotated[
+        StrictInt | None, Field(description="chi_square: rows in the contingency table.")
+    ] = None,
+    columns: Annotated[
+        StrictInt | None, Field(description="chi_square: columns in the contingency table.")
     ] = None,
     proportions: Annotated[
-        list[float] | None,
+        list[StrictFloat] | None,
         Field(description="two_proportions: the two rates, e.g. [0.10, 0.12]."),
     ] = None,
     difference: Annotated[
-        float | None, Field(description="t designs: the difference worth detecting.")
+        StrictFloat | None,
+        Field(
+            description=(
+                "t designs: the difference worth detecting; for paired_t, the mean of the "
+                "paired differences."
+            )
+        ),
     ] = None,
     std_dev: Annotated[
-        float | None, Field(description="t designs: the standard deviation you expect.")
+        StrictFloat | None,
+        Field(
+            description=(
+                "t designs: the standard deviation you expect; for paired_t, the standard "
+                "deviation of the paired differences."
+            )
+        ),
     ] = None,
 ) -> dict[str, Any]:
     return H.analyze_power(
-        design, effect_size, n, alpha, power, ratio, groups, proportions, difference, std_dev
+        design,
+        effect_size=effect_size,
+        n=n,
+        alpha=alpha,
+        power=power,
+        ratio=ratio,
+        groups=groups,
+        proportions=proportions,
+        difference=difference,
+        std_dev=std_dev,
+        rows=rows,
+        columns=columns,
     )
 
 

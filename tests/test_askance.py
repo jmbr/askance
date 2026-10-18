@@ -12,7 +12,10 @@ import os
 import re
 import sys
 import tempfile
+import threading
+import warnings
 from pathlib import Path
+from typing import Any
 
 import pytest
 from mcp import Client, StdioServerParameters
@@ -31,12 +34,14 @@ from askance import hypothesis as H
 from askance.server import mcp
 
 ROOT = Path(__file__).resolve().parent.parent
+README = (ROOT / "README.md").read_text()
 
 A = [2.1, 3.4, 1.9, 5.6, 4.2, 3.3, 2.8, 4.9, 3.1, 2.2]
 B = [4.5, 5.1, 3.9, 6.2, 5.8, 4.1, 5.5, 6.9, 4.4, 5.0]
 C = [1.1, 2.2, 0.9, 3.4, 2.8, 1.7, 2.5, 3.1, 1.4, 2.0]
 TABLE = [[12, 5], [3, 15]]
 WIDE = [[10, 20, 30], [6, 9, 17]]
+CONSTANT = [[1.0] * 5, [1.0, 2.0, 3.0, 4.0, 5.0]]
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
@@ -44,35 +49,35 @@ pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 # -- statistical parity ----------------------------------------------------
 
 
-def _expected(test: str) -> tuple[float, float]:
+def _expected(test: str) -> Any:
+    """The backend's own result for the fixture that `_run` sends through Askance."""
     match test:
         case "one_sample_t":
-            r = stats.ttest_1samp(A, popmean=3.0)
+            return stats.ttest_1samp(A, popmean=3.0)
         case "independent_t":
-            r = stats.ttest_ind(A, B, equal_var=False)
+            return stats.ttest_ind(A, B, equal_var=False)
         case "paired_t":
-            r = stats.ttest_rel(A, B)
+            return stats.ttest_rel(A, B)
         case "mann_whitney_u":
-            r = stats.mannwhitneyu(A, B)
+            return stats.mannwhitneyu(A, B)
         case "wilcoxon_signed_rank":
-            r = stats.wilcoxon(A, B)
+            return stats.wilcoxon(A, B)
         case "one_way_anova":
-            r = stats.f_oneway(A, B, C)
+            return stats.f_oneway(A, B, C)
         case "kruskal_wallis":
-            r = stats.kruskal(A, B, C)
+            return stats.kruskal(A, B, C)
         case "pearson_correlation":
-            r = stats.pearsonr(A, B)
+            return stats.pearsonr(A, B)
         case "spearman_correlation":
-            r = stats.spearmanr(A, B)
+            return stats.spearmanr(A, B)
         case "chi_square_independence":
-            r = stats.chi2_contingency(TABLE)
+            return stats.chi2_contingency(TABLE)
         case "fisher_exact":
-            r = stats.fisher_exact(TABLE)
+            return stats.fisher_exact(TABLE)
         case "binomial_exact":
-            r = stats.binomtest(7, 20, 0.5)
+            return stats.binomtest(7, 20, 0.5)
         case _:  # pragma: no cover
             raise AssertionError(f"no fixture for {test}")
-    return float(r.statistic), float(r.pvalue)
 
 
 def _run(test: str) -> dict:
@@ -87,13 +92,25 @@ def _run(test: str) -> dict:
 
 @pytest.mark.parametrize("test", list(H.TESTS))
 def test_matches_the_backend(test: str) -> None:
-    statistic, p_value = _expected(test)
+    expected = _expected(test)
     result = _run(test)
-    assert result["statistic"] == pytest.approx(statistic)
-    assert result["p_value"] == pytest.approx(p_value)
+    assert result["statistic"] == pytest.approx(float(expected.statistic))
+    assert result["p_value"] == pytest.approx(float(expected.pvalue))
     assert result["test"] == test
     assert result["method"]["function"] == H.TESTS[test]["backend"]
     assert result["versions"]["scipy"]
+
+
+@pytest.mark.parametrize("test", list(H.TESTS))
+def test_degrees_of_freedom_are_reported_only_when_the_backend_supplies_them(test: str) -> None:
+    """Every reported number must come from the backend, never from arithmetic here."""
+    expected = _expected(test)
+    supplied = getattr(expected, "df", getattr(expected, "dof", None))
+    result = _run(test)
+    if supplied is None:
+        assert "degrees_of_freedom" not in result
+    else:
+        assert result["degrees_of_freedom"] == pytest.approx(float(supplied))
 
 
 @pytest.mark.parametrize("test", list(H.TESTS))
@@ -154,6 +171,85 @@ def test_undefined_p_value_is_reported_rather_than_invented() -> None:
     json.dumps(result, allow_nan=False)
 
 
+def test_an_infinite_statistic_is_reported_as_null_with_the_reason() -> None:
+    """A zero cell makes the odds ratio infinite, which JSON cannot carry."""
+    result = H.run_contingency_test("fisher_exact", [[10, 0], [2, 8]])
+    assert result["statistic"] is None and result["odds_ratio"] is None
+    assert any("statistic of inf" in w for w in result["warnings"])
+    json.dumps(result, allow_nan=False)
+
+
+def test_a_decision_the_interval_contradicts_is_explained() -> None:
+    """SciPy's two-sided p-value and its Clopper-Pearson interval invert different tests."""
+    result = H.run_binomial_test(4, 5, 0.3)
+    interval = result["proportion_confidence_interval"]
+    assert result["decision"] == "reject_null"
+    assert interval["low"] <= 0.3 <= interval["high"]
+    assert any("Clopper-Pearson" in w for w in result["warnings"])
+
+
+def test_a_backend_refusal_reaches_the_caller_with_its_reason(monkeypatch) -> None:
+    def refuse(*args, **kwargs):
+        raise ValueError("the backend's reason")
+
+    monkeypatch.setattr(stats, "kruskal", refuse)
+    with pytest.raises(H.AskanceError, match="the backend's reason"):
+        H.run_samples_test("kruskal_wallis", [A, B])
+
+
+def _overlapping_calls(monkeypatch) -> tuple[dict, dict]:
+    """Start a clean call while a warning-emitting call is still inside its backend.
+
+    Without serialization the clean call enters `catch_warnings` second, so it captures the
+    other call's warning and later restores filters the other call had already replaced.
+    """
+    noisy_entered, clean_entered, noisy_done = (threading.Event() for _ in range(3))
+    pearsonr, mannwhitneyu = stats.pearsonr, stats.mannwhitneyu
+
+    def slow_pearsonr(*args, **kwargs):
+        noisy_entered.set()
+        clean_entered.wait(timeout=0.5)
+        return pearsonr(*args, **kwargs)
+
+    def slow_mannwhitneyu(*args, **kwargs):
+        clean_entered.set()
+        noisy_done.wait(timeout=0.5)
+        return mannwhitneyu(*args, **kwargs)
+
+    monkeypatch.setattr(stats, "pearsonr", slow_pearsonr)
+    monkeypatch.setattr(stats, "mannwhitneyu", slow_mannwhitneyu)
+    results: dict[str, dict] = {}
+
+    def noisy() -> None:
+        results["noisy"] = H.run_samples_test("pearson_correlation", CONSTANT)
+        noisy_done.set()
+
+    def clean() -> None:
+        results["clean"] = H.run_samples_test("mann_whitney_u", [A, B])
+
+    first = threading.Thread(target=noisy)
+    first.start()
+    noisy_entered.wait(timeout=5)
+    second = threading.Thread(target=clean)
+    second.start()
+    first.join()
+    second.join()
+    return results["noisy"], results["clean"]
+
+
+def test_overlapping_calls_keep_their_own_warnings(monkeypatch) -> None:
+    """The MCP SDK runs each sync tool call on its own worker thread."""
+    noisy, clean = _overlapping_calls(monkeypatch)
+    assert any("ConstantInputWarning" in w for w in noisy["warnings"])
+    assert not any("ConstantInputWarning" in w for w in clean["warnings"])
+
+
+def test_overlapping_calls_leave_the_warning_filters_as_they_found_them(monkeypatch) -> None:
+    before = list(warnings.filters)
+    _overlapping_calls(monkeypatch)
+    assert warnings.filters == before
+
+
 # -- validation ------------------------------------------------------------
 
 
@@ -161,6 +257,7 @@ def test_undefined_p_value_is_reported_rather_than_invented() -> None:
     ("call", "message"),
     [
         (lambda: H.run_samples_test("nope", [A]), "unknown test"),
+        (lambda: H.run_samples_test(["x"], [A]), "unknown test"),
         (lambda: H.run_samples_test("fisher_exact", [A]), "test_contingency"),
         (lambda: H.run_samples_test("paired_t", [A, B[:3]]), "same length"),
         (lambda: H.run_samples_test("one_sample_t", [A, B]), "exactly 1"),
@@ -176,20 +273,39 @@ def test_undefined_p_value_is_reported_rather_than_invented() -> None:
         (lambda: H.run_samples_test("paired_t", [A, [float("nan")] * 10]), "finite"),
         (lambda: H.run_samples_test("paired_t", [A, [float("inf")] * 10]), "finite"),
         (lambda: H.run_samples_test("independent_t", [A, ["x"] * 10]), "must be a number"),
+        (lambda: H.run_samples_test("one_sample_t", [[10**400]], reference=0), "too large"),
         (lambda: H.run_samples_test("independent_t", [A, []]), "empty"),
         (lambda: H.run_samples_test("independent_t", [A, B[0]]), "array of arrays"),
         (lambda: H.run_samples_test("independent_t", []), "non-empty"),
+        (lambda: H.run_samples_test("wilcoxon_signed_rank", [A, A]), "nothing to rank"),
         (lambda: H.run_contingency_test("fisher_exact", WIDE), "2x2"),
         (lambda: H.run_contingency_test("chi_square_independence", [[1, 2], [3]]), "equal length"),
         (lambda: H.run_contingency_test("chi_square_independence", [[1, -2], [3, 4]]), "negative"),
         (lambda: H.run_contingency_test("chi_square_independence", [[1, 2.5], [3, 4]]), "integer"),
         (lambda: H.run_contingency_test("chi_square_independence", [[0, 0], [0, 0]]), "all zeros"),
+        (
+            lambda: H.run_contingency_test("chi_square_independence", [[10, 20, 30]]),
+            "at least 2 rows and 2 columns",
+        ),
+        (
+            lambda: H.run_contingency_test("chi_square_independence", [[10], [20], [30]]),
+            "at least 2 rows and 2 columns",
+        ),
+        (
+            lambda: H.run_contingency_test("chi_square_independence", [[0, 0], [3, 4]]),
+            "row 0 has no observations",
+        ),
+        (
+            lambda: H.run_contingency_test("fisher_exact", [[5, 0], [3, 0]]),
+            "column 1 has no observations",
+        ),
         (lambda: H.run_binomial_test(30, 10), "between 0 and trials"),
         (lambda: H.run_binomial_test(-1, 10), "between 0 and trials"),
         (lambda: H.run_binomial_test(1, 0), "trials must be positive"),
         (lambda: H.run_binomial_test(1.5, 10), "must be an integer"),
         (lambda: H.run_binomial_test(1, 10, 1.5), "between 0 and 1"),
         (lambda: H.adjust_p_values([0.1], "nope"), "unknown method"),
+        (lambda: H.adjust_p_values([0.1], ["holm"]), "unknown method"),
         (lambda: H.adjust_p_values([0.1, 1.5], "holm"), "between 0 and 1"),
         (lambda: H.adjust_p_values([], "holm"), "non-empty"),
         (lambda: H.adjust_p_values([0.1, float("nan")], "holm"), "finite"),
@@ -228,29 +344,45 @@ POWER_FIXTURES = {
     ),
     "chi_square": (
         GofChisquarePower,
-        {"effect_size": 0.3, "power": 0.8, "alpha": 0.05, "n_bins": 4},
-        {"groups": 4},
+        {"effect_size": 0.3, "power": 0.8, "alpha": 0.05, "n_bins": 5},
+        {"rows": 3, "columns": 3},
     ),
 }
 
 
-@pytest.mark.parametrize("design", list(H.POWER_DESIGNS))
-def test_power_matches_statsmodels(design: str) -> None:
-    solver, backend_args, extra = POWER_FIXTURES[design]
-    expected = float(solver().solve_power(**backend_args))
-    result = H.analyze_power(
+def _solve_n(design: str) -> dict:
+    _, backend_args, extra = POWER_FIXTURES[design]
+    return H.analyze_power(
         design,
         effect_size=backend_args["effect_size"],
         power=backend_args["power"],
         alpha=backend_args["alpha"],
         **extra,
     )
+
+
+@pytest.mark.parametrize("design", list(H.POWER_DESIGNS))
+def test_power_matches_statsmodels(design: str) -> None:
+    solver, backend_args, _ = POWER_FIXTURES[design]
+    expected = float(solver().solve_power(**backend_args))
+    result = _solve_n(design)
     assert result["solved_for"] == "n"
     assert result["n_exact"] == pytest.approx(expected)
-    # Rounding down would produce less power than requested.
-    assert result["n"] == math.ceil(expected)
     assert result["method"]["class"] == H.POWER_DESIGNS[design]["backend"]
     json.loads(json.dumps(result, allow_nan=False))
+
+
+@pytest.mark.parametrize("design", list(H.POWER_DESIGNS))
+def test_sample_size_is_rounded_up_by_less_than_one_step(design: str) -> None:
+    """Rounding down would produce less power than requested."""
+    result = _solve_n(design)
+    step = POWER_FIXTURES[design][2].get("groups", 1)
+    assert result["n_exact"] <= result["n"] < result["n_exact"] + step
+
+
+def test_anova_sample_size_allows_equal_groups() -> None:
+    result = H.analyze_power("one_way_anova", effect_size=0.25, power=0.8, groups=3)
+    assert result["n"] % 3 == 0
 
 
 @pytest.mark.parametrize("unknown", ["effect_size", "n", "alpha", "power"])
@@ -298,6 +430,53 @@ def test_sample_size_is_reported_for_the_right_thing() -> None:
     )
 
 
+def test_two_group_designs_report_a_second_group_that_reaches_the_power() -> None:
+    result = H.analyze_power("independent_t", effect_size=0.5, power=0.8, ratio=1.5)
+    achieved = TTestIndPower().power(
+        0.5, nobs1=result["n"], alpha=0.05, ratio=result["n_second_group"] / result["n"]
+    )
+    assert result["n_second_group"] == math.ceil(1.5 * result["n_exact"])
+    assert achieved >= 0.8
+
+
+@pytest.mark.parametrize("design", ["one_sample_t", "paired_t", "independent_t", "two_proportions"])
+def test_power_results_name_the_alternative_they_size(design: str) -> None:
+    assert _solve_n(design)["method"]["options"]["alternative"] == "two-sided"
+
+
+def test_chi_square_power_uses_the_degrees_of_freedom_of_the_table() -> None:
+    """A test of independence on an r x c table has (r - 1)(c - 1) degrees of freedom."""
+    result = H.analyze_power("chi_square", effect_size=0.3, power=0.8, rows=3, columns=4)
+    df = (3 - 1) * (4 - 1)
+    noncentrality = result["n_exact"] * 0.3**2
+    achieved = stats.ncx2.sf(stats.chi2.isf(0.05, df), df, noncentrality)
+    assert achieved == pytest.approx(0.8, abs=1e-6)
+
+
+def test_two_proportions_sizes_the_uncorrected_two_by_two_test() -> None:
+    """Exact power of chi_square_independence with correction disabled, at the planned n."""
+    first, second = 0.2, 0.5
+    n = H.analyze_power("two_proportions", proportions=[first, second], power=0.8)["n"]
+    outcomes = range(n + 1)
+    pmf_first, pmf_second = (
+        stats.binom.pmf(outcomes, n, first),
+        stats.binom.pmf(outcomes, n, second),
+    )
+    achieved = sum(
+        pmf_first[a] * pmf_second[b]
+        for a in outcomes
+        for b in outcomes
+        if 0 < a + b < 2 * n
+        and stats.chi2_contingency([[a, n - a], [b, n - b]], correction=False).pvalue < 0.05
+    )
+    assert achieved == pytest.approx(0.8, abs=0.01)
+
+
+def test_two_proportions_is_not_offered_for_the_one_sample_binomial_test() -> None:
+    """two_proportions sizes a comparison of two groups; binomial_exact tests one."""
+    assert "binomial_exact" not in H.POWER_DESIGNS["two_proportions"]["pairs_with"]
+
+
 @pytest.mark.parametrize(
     ("call", "message"),
     [
@@ -331,7 +510,7 @@ def test_sample_size_is_reported_for_the_right_thing() -> None:
             "does not use `proportions`",
         ),
         (
-            lambda: H.analyze_power("chi_square", difference=1, std_dev=2, power=0.8, groups=3),
+            lambda: H.analyze_power("chi_square", difference=1, std_dev=2, power=0.8, rows=3),
             "does not use `difference`",
         ),
         (
@@ -355,6 +534,35 @@ def test_sample_size_is_reported_for_the_right_thing() -> None:
         (
             lambda: H.analyze_power("independent_t", effect_size=0.5, power=0.8, ratio=0),
             "ratio must be positive",
+        ),
+        (lambda: H.analyze_power(["t"], effect_size=0.5, power=0.8), "unknown design"),
+        (
+            lambda: H.analyze_power("independent_t", effect_size=0.5, power=0.03),
+            "must exceed alpha",
+        ),
+        (
+            lambda: H.analyze_power("one_way_anova", effect_size=0.25, n=3, power=None, groups=3),
+            "greater than groups",
+        ),
+        (
+            lambda: H.analyze_power("independent_t", effect_size=50, power=0.8),
+            "could not solve for n",
+        ),
+        (
+            lambda: H.analyze_power("chi_square", effect_size=0.3, power=0.8, groups=3),
+            "give the table's `rows` and `columns` instead",
+        ),
+        (
+            lambda: H.analyze_power("chi_square", effect_size=0.3, power=0.8, rows=3),
+            "needs `rows` and `columns`",
+        ),
+        (
+            lambda: H.analyze_power("chi_square", effect_size=0.3, power=0.8, rows=1, columns=3),
+            "rows must be an integer of at least 2",
+        ),
+        (
+            lambda: H.analyze_power("independent_t", effect_size=0.5, power=0.8, rows=2, columns=2),
+            "does not use `rows` or `columns`",
         ),
     ],
 )
@@ -383,25 +591,52 @@ def test_every_advertised_test_is_callable() -> None:
     assert {m["id"] for m in catalog["correction_methods"]} == set(H.CORRECTION_METHODS)
 
 
-def test_readme_documents_exactly_the_supported_ids() -> None:
-    """Keep the documented IDs in sync with the runtime catalogs."""
-    readme = (ROOT / "README.md").read_text()
-    supported = set(H.TESTS) | set(H.CORRECTION_METHODS) | set(H.POWER_DESIGNS)
-    for name in supported:
-        assert f"`{name}`" in readme, f"README does not document {name}"
-    documented = set(re.findall(r"`([a-z0-9_]+)`", readme))
-    for stale in documented - supported:
-        assert not stale.endswith("_test"), f"README cites a test id that no longer exists: {stale}"
+def _table_ids(heading: str) -> set[str]:
+    """Backticked ids in the first column of the table under `heading`."""
+    section = README.split(f"\n{heading}\n", 1)[1].split("\n#", 1)[0]
+    return set(re.findall(r"^\| `([^`]+)` \|", section, re.M))
+
+
+def _sentence_ids(opening: str) -> set[str]:
+    """Backticked ids in the sentence that starts with `opening`."""
+    sentence = re.search(rf"{re.escape(opening)}(.*?)\.\s", README, re.S)
+    assert sentence, f"README has no sentence starting {opening!r}"
+    return set(re.findall(r"`([^`]+)`", sentence.group(1)))
+
+
+@pytest.mark.parametrize(
+    ("documented", "supported"),
+    [
+        (lambda: _table_ids("### Tests"), set(H.TESTS)),
+        (lambda: _table_ids("### Corrections"), set(H.CORRECTION_METHODS)),
+        (lambda: _sentence_ids("Supported designs are"), set(H.POWER_DESIGNS)),
+    ],
+    ids=["tests", "corrections", "designs"],
+)
+def test_readme_documents_exactly_the_supported_ids(documented, supported) -> None:
+    """A missing id and an id that no longer exists both fail."""
+    assert documented() == supported
 
 
 def test_readme_example_matches_scipy() -> None:
-    readme = (ROOT / "README.md").read_text()
     result = H.run_samples_test(
         "independent_t",
         [[2.1, 3.4, 1.9, 5.6, 4.2], [4.5, 5.1, 3.9, 6.2, 5.8]],
     )
     for key in ("statistic", "p_value", "decision", "degrees_of_freedom"):
-        assert f'"{key}": {json.dumps(result[key])}' in readme
+        assert f'"{key}": {json.dumps(result[key])}' in README
+
+
+def test_readme_power_example_matches_statsmodels() -> None:
+    request, response = re.search(
+        r'```json\n(\{"design".*?\})\n```\s*```json\n(.*?)\n```', README, re.S
+    ).groups()
+    result = H.analyze_power(**json.loads(request))
+    for key, documented in json.loads(response).items():
+        if isinstance(documented, float):
+            assert result[key] == pytest.approx(documented), key
+        else:
+            assert result[key] == documented, key
 
 
 # -- the MCP surface -------------------------------------------------------
@@ -449,6 +684,64 @@ async def test_an_invalid_call_explains_itself_to_the_caller() -> None:
         result = await client.call_tool("test_samples", {"test": "paired_t", "samples": [A, B[:3]]})
     assert result.is_error
     assert "same length" in result.content[0].text
+
+
+@pytest.mark.anyio
+async def test_a_backend_refusal_is_not_an_opaque_tool_error(monkeypatch) -> None:
+    """The SDK hides the message of any exception that is not a ToolError."""
+
+    def refuse(*args, **kwargs):
+        raise ValueError("the backend's reason")
+
+    monkeypatch.setattr(stats, "pearsonr", refuse)
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "test_samples", {"test": "pearson_correlation", "samples": [A, B]}
+        )
+    assert result.is_error
+    assert "the backend's reason" in result.content[0].text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        (
+            "test_samples",
+            {"test": "one_sample_t", "samples": [[True, False, True]], "reference": 0},
+        ),
+        ("test_samples", {"test": "one_sample_t", "samples": [["1.5", "2.5"]], "reference": 0}),
+        ("test_samples", {"test": "one_sample_t", "samples": [A], "reference": True}),
+        ("test_samples", {"test": "independent_t", "samples": [A, B], "equal_var": "yes"}),
+        ("test_contingency", {"test": "fisher_exact", "table": [[True, False], [3, 4]]}),
+        ("test_contingency", {"test": "fisher_exact", "table": [["8", "2"], ["1", "5"]]}),
+        ("test_contingency", {"test": "fisher_exact", "table": [[8.0, 2.0], [1.0, 5.0]]}),
+        ("test_binomial", {"successes": True, "trials": 10}),
+        ("test_binomial", {"successes": "7", "trials": 20}),
+        ("adjust_p_values", {"p_values": [0.01, "0.2"], "method": "holm"}),
+        (
+            "analyze_power",
+            {"design": "one_way_anova", "effect_size": 0.25, "power": 0.8, "groups": True},
+        ),
+    ],
+)
+async def test_the_mcp_surface_does_not_coerce_what_the_core_refuses(tool, arguments) -> None:
+    """Lax validation would turn true into 1 and "7" into 7 before Askance could refuse them."""
+    async with Client(mcp) as client:
+        result = await client.call_tool(tool, arguments)
+    assert result.is_error
+
+
+@pytest.mark.anyio
+async def test_the_mcp_surface_accepts_integers_where_it_expects_numbers() -> None:
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "test_samples", {"test": "one_sample_t", "samples": [[1, 2, 3, 4]], "reference": 0}
+        )
+    assert not result.is_error
+    assert result.structured_content["p_value"] == pytest.approx(
+        float(stats.ttest_1samp([1, 2, 3, 4], popmean=0).pvalue)
+    )
 
 
 @pytest.mark.anyio

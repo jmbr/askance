@@ -49,6 +49,12 @@ Preserve these constraints:
   a value changes the answer without telling anyone.
 - **stdout belongs to the MCP protocol.** Diagnostics go to stderr or they corrupt the
   stream.
+- **Tool arguments use strict types.** In lax mode pydantic turns `true` into 1 and `"7"`
+  into 7 before the core can refuse them.
+- **Backend calls run inside `_backend()`.** `warnings.catch_warnings` is process-global and
+  the SDK runs each tool call on a worker thread; the lock keeps one call's warnings out of
+  another's result. `_backend()` also turns a backend's `ValueError` into an `AskanceError`,
+  because the SDK hides the message of any other exception.
 - **One catalog.** `server.py` derives its `Literal` types from `H.TESTS`, so a test
   cannot be advertised without being callable. Never restate the catalog.
 
@@ -58,8 +64,9 @@ Preserve these constraints:
    input shape (`samples` is `1`, `2`, or `"2+"`), any flags (`directional`,
    `needs_reference`, `paired`, `accepts_equal_var`), the `backend` dotted path, and
    accurate `assumptions`.
-2. Add a branch to the matching `run_*_test` dispatch that calls exactly the backend
-   named in `backend`, and passes warnings through rather than swallowing them.
+2. Add a branch to the matching `run_*_test` dispatch, inside its `_backend()` block, that
+   calls exactly the backend named in `backend`, and passes warnings through rather than
+   swallowing them.
 3. Leave `server.py` alone unless the tool gains a new argument: the schemas follow the
    catalog.
 4. Add a fixture branch to `_expected()` in the test suite. The parity tests are
