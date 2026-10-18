@@ -10,7 +10,7 @@ description: >
   Do not use it for summary statistics, plotting, a single reading against a
   threshold, or prose that merely cites numbers.
 license: MIT
-compatibility: Requires the askance MCP server (https://github.com/jmbr/askance) configured in the client.
+compatibility: Requires the askance MCP server (https://git.superadditive.com/jmbr/askance) configured in the client.
 ---
 
 # Run a statistical comparison
