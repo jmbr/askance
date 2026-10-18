@@ -11,7 +11,7 @@ evidence that the null hypothesis is true.
 Requires Python 3.12 or newer.
 
 ```bash
-uv tool install git+http://localhost:3000/jmbr/askance
+uv tool install git+https://git.superadditive.com/jmbr/askance
 command -v askance      # the absolute path used below
 ```
 
