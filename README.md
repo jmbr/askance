@@ -8,7 +8,7 @@ evidence that the null hypothesis is true.
 
 ## Install
 
-Requires Python 3.12 or newer.
+Requires Python 3.12 or newer, [uv](https://docs.astral.sh/uv/), and git.
 
 ```bash
 uv tool install git+https://git.superadditive.com/jmbr/askance
@@ -50,13 +50,18 @@ names with the server name.
 
 ## Optional: the skill
 
-The server exposes statistical operations. The bundled skill teaches an agent when to use
-them, so a question such as "did the change help?" calls Askance instead of relying on visual
-inspection.
+The server exposes statistical operations. The skill in this repository teaches an agent when
+to use them, so a question such as "did the change help?" calls Askance instead of relying on
+visual inspection.
+
+The installed package does not include the skill. Run these commands from a clone
+(`git clone https://git.superadditive.com/jmbr/askance`), and keep the clone: the links point
+into it.
 
 ```bash
+mkdir -p ~/.agents/skills ~/.pi/agent/skills
 ln -s "$PWD/skills/askance" ~/.agents/skills/askance        # Copilot CLI
-ln -s ../../../.agents/skills/askance ~/.pi/agent/skills/   # Pi
+ln -s ../../../.agents/skills/askance ~/.pi/agent/skills/   # Pi, through the link above
 ```
 
 The skill follows the [Agent Skills spec](https://agentskills.io/specification).
