@@ -35,6 +35,7 @@ from askance.server import mcp
 
 ROOT = Path(__file__).resolve().parent.parent
 README = (ROOT / "README.md").read_text()
+REFERENCE = (ROOT / "docs" / "REFERENCE.md").read_text()
 
 A = [2.1, 3.4, 1.9, 5.6, 4.2, 3.3, 2.8, 4.9, 3.1, 2.2]
 B = [4.5, 5.1, 3.9, 6.2, 5.8, 4.1, 5.5, 6.9, 4.4, 5.0]
@@ -593,14 +594,14 @@ def test_every_advertised_test_is_callable() -> None:
 
 def _table_ids(heading: str) -> set[str]:
     """Backticked ids in the first column of the table under `heading`."""
-    section = README.split(f"\n{heading}\n", 1)[1].split("\n#", 1)[0]
+    section = REFERENCE.split(f"\n{heading}\n", 1)[1].split("\n#", 1)[0]
     return set(re.findall(r"^\| `([^`]+)` \|", section, re.M))
 
 
 def _sentence_ids(opening: str) -> set[str]:
     """Backticked ids in the sentence that starts with `opening`."""
-    sentence = re.search(rf"{re.escape(opening)}(.*?)\.\s", README, re.S)
-    assert sentence, f"README has no sentence starting {opening!r}"
+    sentence = re.search(rf"{re.escape(opening)}(.*?)\.\s", REFERENCE, re.S)
+    assert sentence, f"docs/REFERENCE.md has no sentence starting {opening!r}"
     return set(re.findall(r"`([^`]+)`", sentence.group(1)))
 
 
@@ -613,7 +614,7 @@ def _sentence_ids(opening: str) -> set[str]:
     ],
     ids=["tests", "corrections", "designs"],
 )
-def test_readme_documents_exactly_the_supported_ids(documented, supported) -> None:
+def test_reference_documents_exactly_the_supported_ids(documented, supported) -> None:
     """A missing id and an id that no longer exists both fail."""
     assert documented() == supported
 
@@ -627,9 +628,9 @@ def test_readme_example_matches_scipy() -> None:
         assert f'"{key}": {json.dumps(result[key])}' in README
 
 
-def test_readme_power_example_matches_statsmodels() -> None:
+def test_reference_power_example_matches_statsmodels() -> None:
     request, response = re.search(
-        r'```json\n(\{"design".*?\})\n```\s*```json\n(.*?)\n```', README, re.S
+        r'```json\n(\{"design".*?\})\n```\s*```json\n(.*?)\n```', REFERENCE, re.S
     ).groups()
     result = H.analyze_power(**json.loads(request))
     for key, documented in json.loads(response).items():

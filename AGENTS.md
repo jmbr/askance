@@ -12,18 +12,45 @@ reported statistic must come from one of those backends.
 | `tests/test_askance.py` | The pytest suite, including the subprocess install test |
 | `tests/skill_trigger_eval.sh` | Does the skill fire on the right prompts? Drives an agent CLI, so pytest does not run it |
 | `skills/askance/SKILL.md` | The Agent Skill that routes statistics questions to the server |
+| `docs/REFERENCE.md` | The user-facing reference: every tool, test, correction, and power design |
 | `noxfile.py` | Every check, defined once |
 
 ## Checks
 
 ```bash
 uvx nox                            # tests on 3.12 and 3.13, lint, skill validation
+uvx nox -s tests                   # just the tests
+uvx nox -s lint                    # ruff check and ruff format --check
 uvx nox -s format                  # fix whatever ruff can fix
+uvx nox -s skills                  # validate skills/ with skills-ref
 uvx nox -s tests -- -k binomial    # arguments after -- go to pytest
 ```
 
-`prek install` wires those same sessions to git hooks: formatting, skill validation and
-secret scanning on commit, the full suite on push.
+Or work in the checkout directly:
+
+```bash
+uv sync --extra dev
+uv run pytest
+uv run ruff check
+```
+
+The suite compares every test against a direct SciPy or statsmodels call, and starts the
+installed executable from an unrelated directory with no virtualenv, which is how an agent
+starts it. Under nox that executable comes from a freshly built wheel, so a packaging
+mistake fails the suite.
+
+After changing the source, reinstall the tool with `uv tool install . --reinstall`. Plain
+`--force` replaces the executable but reuses a wheel cached against the unchanged version,
+so an agent keeps talking to the old server.
+
+[prek](https://github.com/j178/prek) wires those same sessions to git hooks: formatting, skill
+validation and secret scanning with [betterleaks](https://github.com/betterleaks/betterleaks) on
+commit, the full suite on push.
+
+```bash
+prek install          # once per clone
+prek run --all-files  # check everything now
+```
 
 Do not add a check to `.pre-commit-config.yaml` if it can be a nox session. Define it in
 `noxfile.py`, then call that session from the hook.
@@ -72,8 +99,9 @@ Preserve these constraints:
 4. Add a fixture branch to `_expected()` in the test suite. The parity tests are
    parametrized over `H.TESTS`, so a new entry enrolls itself and fails until a direct
    backend call proves it matches.
-5. Document the id in the README table. `test_readme_documents_exactly_the_supported_ids`
-   fails when the README omits an id, and when it cites one that no longer exists.
+5. Document the id in the matching table in `docs/REFERENCE.md`.
+   `test_reference_documents_exactly_the_supported_ids` fails when the reference omits an id,
+   and when it cites one that no longer exists.
 
 ## Conventions
 
@@ -84,7 +112,7 @@ Preserve these constraints:
 - Commit messages are conventional commits, lowercase, describing the change and its
   reason: `test: compare against the backends and the real transport`. A `commit-msg` hook
   rejects anything else, because the version is computed from these subjects.
-- Tests compare the README's test IDs with the runtime catalog.
+- Tests compare the IDs in `docs/REFERENCE.md` with the runtime catalog.
 
 ## Releases
 

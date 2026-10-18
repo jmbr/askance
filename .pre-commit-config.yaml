@@ -48,8 +48,8 @@ repos:
         files: ^skills/
         pass_filenames: false
 
-      # Always run before a push because tests inspect README.md. `-r` rebuilds the
-      # session so the suite tests a fresh wheel.
+      # Always run before a push because tests inspect README.md and docs/REFERENCE.md.
+      # `-r` rebuilds the session so the suite tests a fresh wheel.
       - id: nox-tests
         name: nox -s tests
         entry: uvx nox -r -s tests
