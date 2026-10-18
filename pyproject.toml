@@ -23,8 +23,18 @@ dependencies = [
     "statsmodels>=0.14",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.8", "python-semantic-release>=10.6"]
+[dependency-groups]
+# uv.lock pins every group; nox sessions install from it, so checks run the locked versions.
+test = ["pytest>=8.0"]
+lint = ["ruff>=0.8"]
+skills = ["skills-ref>=0.1.1"]
+release = ["python-semantic-release>=10.6"]
+dev = [
+    { include-group = "test" },
+    { include-group = "lint" },
+    { include-group = "skills" },
+    { include-group = "release" },
+]
 
 [project.scripts]
 askance = "askance.server:main"

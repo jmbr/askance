@@ -43,7 +43,7 @@ jobs:
 
       - name: Install the project
         if: steps.guard.outputs.run == 'true'
-        run: uv sync --extra dev
+        run: uv sync --locked
 
       # `uvx` runs nox as a tool; nox is not a project dependency.
       - name: Check

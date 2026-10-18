@@ -163,10 +163,17 @@ def test_the_workflow_speaks_forgejo_not_github() -> None:
     assert "GITHUB_OUTPUT" not in text and "GITHUB_PATH" not in text
 
 
+def test_nox_sessions_install_only_what_the_lock_pins() -> None:
+    """A version spec in noxfile.py would bypass uv.lock."""
+    text = (ROOT / "noxfile.py").read_text()
+    assert '"uv",\n        "sync",\n        "--locked",' in text
+    assert "session.install(" not in text
+
+
 def test_nox_is_invoked_as_a_tool_not_a_dependency() -> None:
     """nox is run with uvx because it is a tool, not a project dependency."""
     assert "uvx nox" in workflow()
-    assert "nox" not in str(pyproject()["project"]["optional-dependencies"]["dev"])
+    assert "nox" not in str(pyproject()["dependency-groups"])
 
 
 # -- a starting point ------------------------------------------------------

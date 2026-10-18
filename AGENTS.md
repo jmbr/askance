@@ -29,7 +29,7 @@ uvx nox -s tests -- -k binomial    # arguments after -- go to pytest
 Or work in the checkout directly:
 
 ```bash
-uv sync --extra dev
+uv sync
 uv run pytest
 uv run ruff check
 ```
