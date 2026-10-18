@@ -66,8 +66,10 @@ export -f run_one
 export RUNS MARKER
 
 printf 'Running %s set: %d queries x %d run(s)\n\n' "$SET" "${#QUERIES[@]}" "$RUNS"
-printf '%s\n' "${QUERIES[@]}" \
-  | xargs -P "$PARALLEL" -I{} bash -c 'IFS="|" read -r e l q <<< "{}"; run_one "$e" "$l" "$q"' \
+# NUL-separated and passed as an argument: xargs would otherwise strip quotes such as the
+# apostrophes in "quarter's", and splicing the query into the script would let it run as code.
+printf '%s\0' "${QUERIES[@]}" \
+  | xargs -0 -n 1 -P "$PARALLEL" bash -c 'IFS="|" read -r e l q <<< "$1"; run_one "$e" "$l" "$q"' _ \
   | sort -k4 | tee /tmp/askance_eval.txt
 
 echo
