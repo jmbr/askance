@@ -65,7 +65,14 @@ def test_releases_target_this_forgejo_over_http() -> None:
         "api_domain": {"env": "GITEA_SERVER_URL"},
         "token": {"env": "GITEA_TOKEN"},
         "insecure": True,
+        "ignore_token_for_push": True,
     }
+
+
+def test_releases_push_through_the_checkouts_authenticated_remote() -> None:
+    """A token push URL is built from `domain`, which the job container cannot reach."""
+    assert config()["remote"]["ignore_token_for_push"] is True
+    assert "persist-credentials: false" not in workflow()
 
 
 def test_a_release_publishes_nothing() -> None:

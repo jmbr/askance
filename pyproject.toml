@@ -58,12 +58,14 @@ commit_author = "askance release bot <askance@localhost>"
 match = "main"
 
 [tool.semantic_release.remote]
-# The runner supplies the internal API URL through GITEA_SERVER_URL.
+# The runner supplies the internal API URL through GITEA_SERVER_URL. Pushes go through the
+# checkout's own origin, which actions/checkout authenticated; `domain` only builds links.
 type = "gitea"
 domain = "http://localhost:3000"
 api_domain = { env = "GITEA_SERVER_URL" }
 token = { env = "GITEA_TOKEN" }
 insecure = true
+ignore_token_for_push = true
 
 [tool.semantic_release.changelog]
 # Exclude maintenance-only changes from the changelog.
