@@ -53,7 +53,8 @@ jobs:
       - name: Release
         if: steps.guard.outputs.run == 'true'
         env:
-          # python-semantic-release's Gitea remote reads these variable names.
-          GITEA_SERVER_URL: ${{ forgejo.server_url }}
+          # python-semantic-release's Gitea remote reads these variable names. The server URL
+          # comes from the runner, so it is an address this container can reach.
+          GITEA_API_URL: ${{ forgejo.server_url }}/api/v1
           GITEA_TOKEN: ${{ forgejo.token }}
         run: uv run semantic-release version

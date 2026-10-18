@@ -59,11 +59,12 @@ commit_author = "askance release bot <askance@localhost>"
 match = "main"
 
 [tool.semantic_release.remote]
-# The runner supplies the internal API URL through GITEA_SERVER_URL. Pushes go through the
-# checkout's own origin, which actions/checkout authenticated; `domain` only builds links.
+# `domain` only builds the links people follow, so it is the public address. The job reaches
+# Forgejo at another address: pushes go through the checkout's own origin, which
+# actions/checkout authenticated, and API calls go to GITEA_API_URL, which the workflow sets.
+# semantic-release's Gitea client ignores `api_domain`.
 type = "gitea"
-domain = "http://localhost:3000"
-api_domain = { env = "GITEA_SERVER_URL" }
+domain = "https://git.superadditive.com"
 token = { env = "GITEA_TOKEN" }
 insecure = true
 ignore_token_for_push = true

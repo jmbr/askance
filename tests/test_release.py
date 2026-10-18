@@ -58,15 +58,19 @@ def test_commit_subjects_are_checked_at_the_commit_msg_stage() -> None:
 # -- what a release is, and is not -----------------------------------------
 
 
-def test_releases_target_this_forgejo_over_http() -> None:
+def test_releases_link_to_the_public_forgejo() -> None:
     assert config()["remote"] == {
         "type": "gitea",
-        "domain": "http://localhost:3000",
-        "api_domain": {"env": "GITEA_SERVER_URL"},
+        "domain": "https://git.superadditive.com",
         "token": {"env": "GITEA_TOKEN"},
         "insecure": True,
         "ignore_token_for_push": True,
     }
+
+
+def test_releases_call_the_api_at_the_address_the_runner_supplies() -> None:
+    """The Gitea client ignores `api_domain` and would otherwise derive the API from `domain`."""
+    assert "GITEA_API_URL: ${{ forgejo.server_url }}/api/v1" in workflow()
 
 
 def test_releases_push_through_the_checkouts_authenticated_remote() -> None:
